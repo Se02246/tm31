@@ -1,0 +1,946 @@
+import React, { useState, useEffect } from 'react';
+import { socket } from '../../socket';
+import { 
+  Cpu, 
+  Check, 
+  Keyboard, 
+  AlertCircle, 
+  Info, 
+  RefreshCw, 
+  Key, 
+  CheckCircle2, 
+  Sliders,
+  Monitor,
+  Server,
+  Activity,
+  Wifi,
+  Sparkles,
+  Zap,
+  Terminal,
+  Layers,
+  ChevronRight,
+  ArrowLeft,
+  BookOpen,
+  Scale,
+  Moon,
+  Sun,
+  ShieldCheck,
+  ShieldAlert
+} from 'lucide-react';
+import VirtualKeyboard from '../common/VirtualKeyboard';
+import WifiSettings from './WifiSettings';
+import CookidooSettings from './CookidooSettings';
+import ScaleCalibration from './ScaleCalibration';
+
+const formatUptime = (seconds) => {
+  if (typeof seconds !== 'number' || isNaN(seconds)) return 'N/D';
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hrs > 0) return `${hrs}h ${mins}m ${secs}s`;
+  if (mins > 0) return `${mins}m ${secs}s`;
+  return `${secs}s`;
+};
+
+const MODEL_PRESETS = [
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-1.5-flash',
+  'gemini-1.5-pro'
+];
+
+export default function SettingsPage({ onOpenCookidoo }) {
+  // Voce selezionata: null (menu principale) | 'wifi' | 'cookidoo' | 'ai' | 'diag'
+  const [selectedSection, setSelectedSection] = useState(null);
+  const [wifiStatus, setWifiStatus] = useState(null);
+  const [cookidooStatus, setCookidooStatus] = useState(null);
+  const [interlockStatus, setInterlockStatus] = useState(null);
+  const [secretTaps, setSecretTaps] = useState(0);
+  
+  const [modelName, setModelName] = useState('gemini-2.5-flash');
+  const [hasApiKey, setHasApiKey] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState(null);
+  const [testStatus, setTestStatus] = useState(null); // null, 'testing', 'success', 'error'
+  const [testResult, setTestResult] = useState(null);
+
+  // Informazioni di sistema realmente rilevate
+  const [systemInfo, setSystemInfo] = useState(null);
+  const [isSocketConnected, setIsSocketConnected] = useState(socket.connected);
+  const [clientViewport, setClientViewport] = useState({
+    w: typeof window !== 'undefined' ? window.innerWidth : 0,
+    h: typeof window !== 'undefined' ? window.innerHeight : 0,
+    screenW: typeof window !== 'undefined' && window.screen ? window.screen.width : 0,
+    screenH: typeof window !== 'undefined' && window.screen ? window.screen.height : 0,
+    touchPoints: typeof navigator !== 'undefined' ? navigator.maxTouchPoints || 0 : 0
+  });
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3500);
+  };
+
+  // Caricamento impostazioni e metriche reali dal server
+  const fetchSettings = async () => {
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/settings');
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.settings?.geminiModel) {
+          setModelName(data.settings.geminiModel);
+        }
+        if (typeof data?.hasApiKey === 'boolean') {
+          setHasApiKey(data.hasApiKey);
+        }
+        if (data?.systemInfo) {
+          setSystemInfo(data.systemInfo);
+        }
+      }
+    } catch (err) {
+      console.warn('Errore fetch /api/settings:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const fetchWifiStatus = async () => {
+    try {
+      const res = await fetch('/api/wifi/status');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setWifiStatus(data);
+        }
+      }
+    } catch (err) {}
+  };
+
+  const fetchCookidooStatus = async () => {
+    // 1. Prova prima via Electron IPC se disponibile
+    if (typeof window !== 'undefined' && window.require) {
+      try {
+        const { ipcRenderer } = window.require('electron');
+        if (ipcRenderer) {
+          const res = await ipcRenderer.invoke('cookidoo:get-status');
+          if (res?.success && res.hasAuthCookie) {
+            setCookidooStatus(prev => ({ ...prev, isLoggedIn: true, cookieCount: res.cookieCount }));
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 2. Chiedi al server lo stato registrato
+    try {
+      const res = await fetch('/api/cookidoo/status');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setCookidooStatus(prev => ({ ...prev, ...data }));
+        }
+      }
+    } catch (err) {}
+  };
+
+  const fetchInterlockStatus = async () => {
+    try {
+      const res = await fetch('/api/system/interlock');
+      if (res.ok) {
+        const data = await res.json();
+        setInterlockStatus(data);
+      }
+    } catch (err) {}
+  };
+
+  const toggleSimulateObstacle = async () => {
+    try {
+      const nextVal = !interlockStatus?.simulateObstacle;
+      await fetch('/api/system/interlock/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ simulateObstacle: nextVal })
+      });
+      showToast(nextVal ? 'Simulazione: Ostacolo coperchio inserito' : 'Simulazione: Coperchio libero');
+    } catch (e) {}
+  };
+
+  const toggleSimulateBowlMissing = async () => {
+    try {
+      const nextVal = !interlockStatus?.simulateBowlMissing;
+      await fetch('/api/system/interlock/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ simulateBowlMissing: nextVal })
+      });
+      showToast(nextVal ? 'Simulazione: Boccale rimosso' : 'Simulazione: Boccale presente');
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    fetchSettings();
+    fetchWifiStatus();
+    fetchCookidooStatus();
+    fetchInterlockStatus();
+
+    const handleResize = () => {
+      setClientViewport({
+        w: window.innerWidth,
+        h: window.innerHeight,
+        screenW: window.screen ? window.screen.width : 0,
+        screenH: window.screen ? window.screen.height : 0,
+        touchPoints: navigator.maxTouchPoints || 0
+      });
+    };
+    window.addEventListener('resize', handleResize);
+
+    const handleConnect = () => setIsSocketConnected(true);
+    const handleDisconnect = () => setIsSocketConnected(false);
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+
+    const handleSettingsUpdated = (data) => {
+      if (data?.settings?.geminiModel) {
+        setModelName(data.settings.geminiModel);
+      }
+      if (typeof data?.hasApiKey === 'boolean') {
+        setHasApiKey(data.hasApiKey);
+      }
+      if (data?.systemInfo) {
+        setSystemInfo(data.systemInfo);
+      }
+    };
+
+    const handleState = (stateData) => {
+      if (stateData?.value) {
+        setSystemInfo((prev) => (prev ? { ...prev, fsmState: stateData.value } : null));
+      }
+    };
+
+    const handleCookidooStatus = (st) => {
+      if (st) setCookidooStatus(st);
+    };
+
+    const handleCookidooCleared = () => {
+      setCookidooStatus({ isLoggedIn: false, userName: null, cookieCount: 0 });
+    };
+
+    const handleInterlockState = (data) => {
+      setInterlockStatus(data);
+    };
+
+    socket.on('SETTINGS_UPDATED', handleSettingsUpdated);
+    socket.on('state', handleState);
+    socket.on('COOKIDOO_STATUS_UPDATED', handleCookidooStatus);
+    socket.on('COOKIDOO_DATA_CLEARED', handleCookidooCleared);
+    socket.on('INTERLOCK_STATE', handleInterlockState);
+
+    const intervalId = setInterval(fetchSettings, 10000);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('SETTINGS_UPDATED', handleSettingsUpdated);
+      socket.off('state', handleState);
+      socket.off('COOKIDOO_STATUS_UPDATED', handleCookidooStatus);
+      socket.off('COOKIDOO_DATA_CLEARED', handleCookidooCleared);
+      socket.off('INTERLOCK_STATE', handleInterlockState);
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  const handleSaveModel = async (newModel) => {
+    if (!newModel || typeof newModel !== 'string' || newModel.trim().length === 0) {
+      showToast('Nome modello non valido');
+      return;
+    }
+
+    const trimmed = newModel.trim();
+    setIsLoading(true);
+
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ geminiModel: trimmed })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setModelName(trimmed);
+        showToast(`Modello salvato: ${trimmed}`);
+        fetchSettings();
+      } else {
+        showToast(data.error || 'Errore durante il salvataggio');
+      }
+    } catch (err) {
+      showToast('Errore di connessione al server');
+    } finally {
+      setIsLoading(false);
+      setIsKeyboardOpen(false);
+    }
+  };
+
+  const handleTestModel = async () => {
+    setTestStatus('testing');
+    setTestResult(null);
+    try {
+      const sample = "Cuocere per 3 minuti a 100°C velocità 1 antiorario";
+      const res = await fetch('/api/recipe/parse-step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: sample, autoLoad: false })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setTestStatus('success');
+        setTestResult(data.step);
+        showToast('Test completato con successo!');
+      } else {
+        setTestStatus('error');
+        setTestResult({ error: data.error || 'Risposta non valida' });
+        showToast(data.error || 'Errore durante il test');
+      }
+    } catch (err) {
+      setTestStatus('error');
+      setTestResult({ error: err.message });
+      showToast('Errore chiamata test');
+    }
+  };
+
+  return (
+    <div className="flex-1 flex flex-col h-full bg-[#f8fafc] text-gray-800 select-none overflow-hidden px-5 py-3 relative">
+      
+      {/* Toast Notifica Flottante */}
+      {toastMessage && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 bg-gray-900/90 text-white text-xs font-semibold px-4 py-2 rounded-full shadow-lg border border-gray-700 flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-200">
+          <CheckCircle2 className="w-4 h-4 text-[#00a651]" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {!selectedSection ? (
+        <div className="flex-1 flex flex-col h-full overflow-hidden">
+          {/* Intestazione Sezione con Secret Tap per sbloccare il menu tecnico */}
+          <div 
+            onClick={() => {
+              setSecretTaps(prev => {
+                const next = prev + 1;
+                if (next >= 5) {
+                  setSelectedSection('scale_calib');
+                  showToast('🔧 Menu Tecnico Sbloccato: Calibrazione Bilancia HX711');
+                  return 0;
+                }
+                return next;
+              });
+            }}
+            className="flex items-center gap-3 pb-3 mb-2 border-b border-gray-200/80 shrink-0 cursor-pointer select-none"
+          >
+            <div className="w-10 h-10 rounded-xl bg-green-50 border border-green-100 flex items-center justify-center text-[#00a651] shrink-0">
+              <Sliders className="w-5 h-5 stroke-[2.2]" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-gray-900 tracking-tight leading-none">
+                Impostazioni
+              </h2>
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                Seleziona una voce per gestire o configurare il dispositivo
+              </p>
+            </div>
+          </div>
+
+          {/* Lista Voci Impostazioni - Ottimizzata Touchscreen per 800x480 */}
+          <div className="flex-1 flex flex-col justify-center gap-2.5 max-w-2xl mx-auto w-full py-0.5">
+            {/* Voce 1: Rete Wi-Fi */}
+            <div
+              onClick={() => {
+                setSelectedSection('wifi');
+                fetchWifiStatus();
+              }}
+              className="bg-white hover:bg-gray-50/80 active:scale-[0.99] border border-gray-200/80 rounded-2xl p-3 flex items-center justify-between cursor-pointer transition-all shadow-2xs group"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-11 h-11 rounded-xl bg-green-50 border border-green-100 flex items-center justify-center text-[#00a651] shrink-0 group-hover:scale-105 transition-transform">
+                  <Wifi className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900 group-hover:text-[#00a651] transition-colors">
+                      Rete Wi-Fi
+                    </span>
+                    {wifiStatus?.connected ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#00a651] animate-pulse" />
+                        {wifiStatus.ssid}
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gray-100 text-gray-500 border border-gray-200">
+                        Non connesso
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                    Scansione reti wireless, connessione e inserimento password
+                  </p>
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-full bg-gray-50 group-hover:bg-green-50 flex items-center justify-center text-gray-400 group-hover:text-[#00a651] transition-colors shrink-0 ml-2">
+                <ChevronRight className="w-5 h-5 stroke-[2.2]" />
+              </div>
+            </div>
+
+            {/* Voce 2: App Cookidoo */}
+            <div
+              onClick={() => {
+                setSelectedSection('cookidoo');
+                fetchCookidooStatus();
+              }}
+              className="bg-white hover:bg-gray-50/80 active:scale-[0.99] border border-gray-200/80 rounded-2xl p-3 flex items-center justify-between cursor-pointer transition-all shadow-2xs group"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-11 h-11 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center text-[#00a651] shrink-0 group-hover:scale-105 transition-transform">
+                  <BookOpen className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900 group-hover:text-[#00a651] transition-colors">
+                      App Cookidoo
+                    </span>
+                    {cookidooStatus?.isLoggedIn ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#00a651] animate-pulse" />
+                        {cookidooStatus.userName || 'Accesso Eseguito'}
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gray-100 text-gray-500 border border-gray-200">
+                        Non connesso
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                    Stato account, sincronizzazione preferiti ed eliminazione cookie
+                  </p>
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-full bg-gray-50 group-hover:bg-emerald-50 flex items-center justify-center text-gray-400 group-hover:text-[#00a651] transition-colors shrink-0 ml-2">
+                <ChevronRight className="w-5 h-5 stroke-[2.2]" />
+              </div>
+            </div>
+
+            {/* Voce 3: Modello IA */}
+            <div
+              onClick={() => setSelectedSection('ai')}
+              className="bg-white hover:bg-gray-50/80 active:scale-[0.99] border border-gray-200/80 rounded-2xl p-3 flex items-center justify-between cursor-pointer transition-all shadow-2xs group"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-11 h-11 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 shrink-0 group-hover:scale-105 transition-transform">
+                  <Sparkles className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900 group-hover:text-blue-600 transition-colors">
+                      Modello IA (Gemini)
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold font-mono bg-blue-50 text-blue-700 border border-blue-200">
+                      {modelName}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                    Configurazione motore Gemini per ricette guidate, API Key e test
+                  </p>
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-full bg-gray-50 group-hover:bg-blue-50 flex items-center justify-center text-gray-400 group-hover:text-blue-600 transition-colors shrink-0 ml-2">
+                <ChevronRight className="w-5 h-5 stroke-[2.2]" />
+              </div>
+            </div>
+
+            {/* Voce 4: Diagnostica Hardware */}
+            <div
+              onClick={() => setSelectedSection('diag')}
+              className="bg-white hover:bg-gray-50/80 active:scale-[0.99] border border-gray-200/80 rounded-2xl p-3 flex items-center justify-between cursor-pointer transition-all shadow-2xs group"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-11 h-11 rounded-xl bg-purple-50 border border-purple-100 flex items-center justify-center text-purple-600 shrink-0 group-hover:scale-105 transition-transform">
+                  <Activity className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900 group-hover:text-purple-600 transition-colors">
+                      Diagnostica Hardware
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                      systemInfo?.serialConnected 
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
+                        : 'bg-amber-50 text-amber-700 border-amber-200'
+                    }`}>
+                      {systemInfo?.serialConnected ? 'Seriale OK' : 'Seriale Offline'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                    Seriale TM31, FSM, memoria RAM, protezione burn-in display (5 min) e uptime
+                  </p>
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-full bg-gray-50 group-hover:bg-purple-50 flex items-center justify-center text-gray-400 group-hover:text-purple-600 transition-colors shrink-0 ml-2">
+                <ChevronRight className="w-5 h-5 stroke-[2.2]" />
+              </div>
+            </div>
+
+            {/* Voce 5: Calibrazione Bilancia (HX711) - Menu Tecnico */}
+            <div
+              onClick={() => setSelectedSection('scale_calib')}
+              className="bg-white hover:bg-gray-50/80 active:scale-[0.99] border border-gray-200/80 rounded-2xl p-3 flex items-center justify-between cursor-pointer transition-all shadow-2xs group"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-11 h-11 rounded-xl bg-amber-50 border border-amber-200/90 flex items-center justify-center text-amber-600 shrink-0 group-hover:scale-105 transition-transform shadow-2xs">
+                  <Scale className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900 group-hover:text-amber-600 transition-colors">
+                      Calibrazione Bilancia (HX711)
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                      Servizio Tecnico
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                    Taratura celle di carico e ricalcolo fattore di conversione con peso noto
+                  </p>
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-full bg-gray-50 group-hover:bg-amber-50 flex items-center justify-center text-gray-400 group-hover:text-amber-600 transition-colors shrink-0 ml-2">
+                <ChevronRight className="w-5 h-5 stroke-[2.2]" />
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-hidden flex flex-col h-full">
+          {/* Header Voce di Dettaglio con Tasto Indietro (senza barra 'Impostazioni Bimby TM31' e senza slicer) */}
+          <div className="flex items-center justify-between pb-2 mb-2 border-b border-gray-200/80 shrink-0">
+            <button
+              onClick={() => {
+                setSelectedSection(null);
+                fetchWifiStatus();
+                fetchCookidooStatus();
+              }}
+              className="flex items-center gap-2 px-3 py-1.5 -ml-1 rounded-xl bg-white hover:bg-gray-50 active:scale-95 border border-gray-200/90 text-gray-700 text-xs font-bold transition-all shadow-2xs cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4 text-gray-600 stroke-[2.2]" />
+              <span>Indietro</span>
+            </button>
+
+            <div className="flex items-center gap-2">
+              {selectedSection === 'wifi' && (
+                <>
+                  <div className="w-6 h-6 rounded-lg bg-green-50 border border-green-100 flex items-center justify-center text-[#00a651]">
+                    <Wifi className="w-3.5 h-3.5 stroke-[2.2]" />
+                  </div>
+                  <span className="text-xs font-bold text-gray-900">Rete Wi-Fi</span>
+                </>
+              )}
+              {selectedSection === 'cookidoo' && (
+                <>
+                  <div className="w-6 h-6 rounded-lg bg-emerald-50 border border-emerald-100 flex items-center justify-center text-[#00a651]">
+                    <BookOpen className="w-3.5 h-3.5 stroke-[2.2]" />
+                  </div>
+                  <span className="text-xs font-bold text-gray-900">App Cookidoo</span>
+                </>
+              )}
+              {selectedSection === 'ai' && (
+                <>
+                  <div className="w-6 h-6 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600">
+                    <Sparkles className="w-3.5 h-3.5 stroke-[2.2]" />
+                  </div>
+                  <span className="text-xs font-bold text-gray-900">Modello IA (Gemini)</span>
+                </>
+              )}
+              {selectedSection === 'diag' && (
+                <>
+                  <div className="w-6 h-6 rounded-lg bg-purple-50 border border-purple-100 flex items-center justify-center text-purple-600">
+                    <Activity className="w-3.5 h-3.5 stroke-[2.2]" />
+                  </div>
+                  <span className="text-xs font-bold text-gray-900">Diagnostica Hardware</span>
+                </>
+              )}
+              {selectedSection === 'scale_calib' && (
+                <>
+                  <div className="w-6 h-6 rounded-lg bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center">
+                    <Scale className="w-3.5 h-3.5 stroke-[2.2]" />
+                  </div>
+                  <span className="text-xs font-bold text-gray-900">Calibrazione Bilancia (HX711)</span>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* 1. SEZIONE RETE WI-FI */}
+          {selectedSection === 'wifi' && (
+            <div className="flex-1 overflow-hidden flex flex-col">
+              <WifiSettings />
+            </div>
+          )}
+
+          {/* 2. SEZIONE APP COOKIDOO */}
+          {selectedSection === 'cookidoo' && (
+            <div className="flex-1 overflow-hidden flex flex-col">
+              <CookidooSettings onOpenCookidoo={onOpenCookidoo} />
+            </div>
+          )}
+
+          {/* 2. SCHEDA MODELLO AI & CLOUD */}
+          {selectedSection === 'ai' && (
+        <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-3">
+          
+          <div className="grid grid-cols-12 gap-3.5">
+            {/* Box Configurazione Modello */}
+            <div className="col-span-7 bg-white rounded-2xl p-4 border border-gray-200/80 shadow-2xs flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-[#00a651]" />
+                  <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
+                    Modello Google Gemini
+                  </span>
+                </div>
+                <span className="text-[10px] font-semibold bg-green-50 text-[#00a651] px-2.5 py-0.5 rounded-full border border-green-100">
+                  Attivo
+                </span>
+              </div>
+
+              {/* Campo Modello con apertura tastiera */}
+              <div 
+                onClick={() => setIsKeyboardOpen(true)}
+                className="group flex items-center justify-between bg-gray-50 hover:bg-gray-100/80 active:bg-gray-200/60 border border-gray-200 rounded-xl px-3.5 py-2.5 cursor-pointer transition-all shadow-inner"
+              >
+                <div className="flex items-center gap-2.5 overflow-hidden">
+                  <Keyboard className="w-5 h-5 text-gray-400 group-hover:text-[#00a651] transition-colors shrink-0" />
+                  <div className="flex flex-col">
+                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">
+                      Tocca per modificare
+                    </span>
+                    <span className="text-sm font-mono font-bold text-gray-900 tracking-wide truncate">
+                      {modelName}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1 bg-white px-3 py-1 rounded-lg border border-gray-200 text-xs font-bold text-gray-700 shadow-2xs">
+                  <span>Modifica</span>
+                </div>
+              </div>
+
+              {/* Preset Rapidi */}
+              <div className="flex flex-col gap-1.5 pt-1">
+                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                  Preset Consigliati:
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {MODEL_PRESETS.map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => handleSaveModel(p)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold transition-all border cursor-pointer ${
+                        modelName === p
+                          ? 'bg-[#00a651] text-white border-[#008f45] shadow-2xs'
+                          : 'bg-gray-50 hover:bg-gray-100 text-gray-600 border-gray-200'
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Box API Key & Test */}
+            <div className="col-span-5 flex flex-col gap-3">
+              
+              {/* Stato Chiave API */}
+              <div className="bg-white rounded-2xl p-3.5 border border-gray-200/80 shadow-2xs flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <Key className="w-4 h-4 text-gray-400" />
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                      GEMINI_API_KEY
+                    </span>
+                    <span className="text-xs font-bold text-gray-800">
+                      {hasApiKey ? 'Configurata nel server (.env)' : 'Non configurata'}
+                    </span>
+                  </div>
+                </div>
+
+                <span className={`w-2.5 h-2.5 rounded-full ${hasApiKey ? 'bg-[#00a651] animate-pulse' : 'bg-red-500'}`} />
+              </div>
+
+              {/* Test Live */}
+              <div className="bg-white rounded-2xl p-3.5 border border-gray-200/80 shadow-2xs flex flex-col gap-2.5 flex-1 justify-between">
+                <div>
+                  <span className="text-xs font-bold text-gray-800 flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 text-amber-500" />
+                    Verifica Connessione AI
+                  </span>
+                  <p className="text-[11px] text-gray-500 mt-1 leading-snug">
+                    Invia un testo di prova a Gemini per verificare la risposta del modello.
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleTestModel}
+                  disabled={testStatus === 'testing'}
+                  className="w-full py-2 rounded-xl bg-gray-100 hover:bg-[#00a651] hover:text-white active:scale-95 text-gray-700 text-xs font-bold transition-all flex items-center justify-center gap-2 border border-gray-200 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${testStatus === 'testing' ? 'animate-spin' : ''}`} />
+                  <span>{testStatus === 'testing' ? 'Test in corso...' : 'Esegui Test'}</span>
+                </button>
+              </div>
+
+            </div>
+          </div>
+
+          {/* Risultato Test Modello */}
+          {testResult && (
+            <div className={`p-3 rounded-2xl text-xs font-mono border ${testStatus === 'success' ? 'bg-green-50/70 border-green-200 text-green-900' : 'bg-red-50 border-red-200 text-red-800'}`}>
+              {testStatus === 'success' ? (
+                <div>
+                  <div className="font-bold mb-1 flex items-center gap-1 text-[#00a651]">
+                    <CheckCircle2 className="w-4 h-4" /> Risposta valida ricevuta da {modelName}:
+                  </div>
+                  <div className="text-[11px] text-gray-700">
+                    Azione: <strong className="text-gray-900">{testResult.actionType}</strong> • Tempo: <strong>{testResult.time}s</strong> • Temp: <strong>{testResult.temp}°C</strong> • Vel: <strong>{testResult.speed}</strong> • Antiorario: <strong>{String(testResult.direction)}</strong>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <strong>Errore Test: </strong>
+                  <span>{testResult.error}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+        </div>
+      )}
+
+          {/* 3. SCHEDA DIAGNOSTICA HARDWARE */}
+          {selectedSection === 'diag' && (
+        <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-3">
+          
+          <div className="bg-white rounded-2xl p-4 border border-gray-200/80 shadow-2xs flex flex-col gap-3">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4 text-[#00a651]" />
+                <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
+                  Metriche Realtime Sistema & Hardware
+                </span>
+              </div>
+              <button
+                onClick={fetchSettings}
+                className="px-3 py-1 rounded-xl bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-600 text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs transition-all"
+              >
+                <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin text-[#00a651]' : ''}`} />
+                <span>Ricarica</span>
+              </button>
+            </div>
+
+            {/* Griglia Metriche 2 Colonne */}
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+              
+              <div className="flex items-center justify-between py-1.5 border-b border-gray-100">
+                <span className="text-gray-500 flex items-center gap-1.5">
+                  <span className={`w-2 h-2 rounded-full ${systemInfo?.serialConnected ? 'bg-[#00a651]' : 'bg-amber-500'}`} />
+                  Seriale Bimby TM31:
+                </span>
+                <span className={`font-bold font-mono ${systemInfo?.serialConnected ? 'text-[#00a651]' : 'text-amber-600'}`}>
+                  {systemInfo ? (systemInfo.serialConnected ? 'Connessa (UART)' : 'Non connessa') : '...'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1.5 border-b border-gray-100">
+                <span className="text-gray-500">Modalità Operativa:</span>
+                <span className="font-bold text-gray-800 font-mono">
+                  {systemInfo?.hardwareMode ? systemInfo.hardwareMode.toUpperCase() : 'N/D'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1.5 border-b border-gray-100">
+                <span className="text-gray-500">Stato FSM Macchina:</span>
+                <span className="font-bold text-[#00a651] font-mono">
+                  {systemInfo?.fsmState ? String(systemInfo.fsmState).toUpperCase() : 'N/D'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1.5 border-b border-gray-100">
+                <span className="text-gray-500 flex items-center gap-1">
+                  <Monitor className="w-3.5 h-3.5 text-gray-400" />
+                  Risoluzione Display:
+                </span>
+                <span className="font-bold text-gray-800 font-mono">
+                  {clientViewport.w} × {clientViewport.h} px (Touch: {clientViewport.touchPoints})
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1.5 border-b border-gray-100">
+                <span className="text-gray-500 flex items-center gap-1">
+                  <Wifi className="w-3.5 h-3.5 text-gray-400" />
+                  WebSocket Realtime:
+                </span>
+                <span className={`font-bold font-mono ${isSocketConnected ? 'text-[#00a651]' : 'text-red-500'}`}>
+                  {isSocketConnected ? 'Connesso' : 'Disconnesso'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1.5 border-b border-gray-100">
+                <span className="text-gray-500">Memoria RAM Server:</span>
+                <span className="font-bold text-gray-800 font-mono">
+                  {systemInfo?.heapUsedMb || 'N/D'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-gray-500">Uptime Processo:</span>
+                <span className="font-bold text-gray-800 font-mono">
+                  {formatUptime(systemInfo?.uptimeSeconds)}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-gray-500">Piattaforma & Node:</span>
+                <span className="font-bold text-gray-800 font-mono">
+                  {systemInfo ? `${systemInfo.nodeVersion} • ${systemInfo.platform}` : 'N/D'}
+                </span>
+              </div>
+
+            </div>
+
+            {/* Sezione Interlock di Sicurezza & Microinterruttori */}
+            <div className="pt-2.5 border-t border-gray-100 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-[#00a651]" />
+                  <span className="text-xs font-bold text-gray-800">
+                    Microinterruttori di Sicurezza (Interlock)
+                  </span>
+                </div>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                  interlockStatus?.bowlPresent && interlockStatus?.lidLocked
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    : 'bg-amber-50 text-amber-700 border-amber-200'
+                }`}>
+                  {interlockStatus?.bowlPresent && interlockStatus?.lidLocked ? 'Circuito Chiuso (Pronto)' : 'Aperto'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="flex items-center justify-between p-2 rounded-xl bg-gray-50 border border-gray-200/70">
+                  <span className="text-gray-600">Micro Boccale:</span>
+                  <span className={`font-bold font-mono text-[11px] ${interlockStatus?.bowlPresent ? 'text-[#00a651]' : 'text-red-500'}`}>
+                    {interlockStatus?.bowlPresent ? 'Inserito (OK)' : 'Assente'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between p-2 rounded-xl bg-gray-50 border border-gray-200/70">
+                  <span className="text-gray-600">Micro Coperchio:</span>
+                  <span className={`font-bold font-mono text-[11px] ${interlockStatus?.lidLocked ? 'text-[#00a651]' : 'text-amber-600'}`}>
+                    {interlockStatus?.lidLocked ? 'Bloccato (OK)' : 'Aperto'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Tasti di simulazione ostacoli (per sviluppo e verifica) */}
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={toggleSimulateObstacle}
+                  className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs active:scale-95 ${
+                    interlockStatus?.simulateObstacle
+                      ? 'bg-red-500 text-white border-red-600'
+                      : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border-gray-200'
+                  }`}
+                >
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  <span>{interlockStatus?.simulateObstacle ? 'Ostacolo Coperchio ATTIVO' : 'Test Ostacolo Coperchio'}</span>
+                </button>
+
+                <button
+                  onClick={toggleSimulateBowlMissing}
+                  className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs active:scale-95 ${
+                    interlockStatus?.simulateBowlMissing
+                      ? 'bg-red-500 text-white border-red-600'
+                      : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border-gray-200'
+                  }`}
+                >
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  <span>{interlockStatus?.simulateBowlMissing ? 'Boccale Assente ATTIVO' : 'Test Boccale Assente'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Protezione Burn-in Schermo (Attenuazione Display) */}
+            <div className="pt-2.5 border-t border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Moon className="w-4 h-4 text-indigo-500" />
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-gray-800">
+                    Protezione Burn-in Schermo: <span className="text-[#00a651]">Attiva (5 min)</span>
+                  </span>
+                  <span className="text-[11px] text-gray-500">
+                    Attenua automaticamente il display al 15% per salvaguardare il touchscreen
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  window.dispatchEvent(new CustomEvent('trigger-screen-dim'));
+                }}
+                className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 active:scale-95 border border-indigo-200 text-indigo-800 text-xs font-bold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+              >
+                <Moon className="w-3.5 h-3.5 stroke-[2.2]" />
+                <span>Test Attenuazione</span>
+              </button>
+            </div>
+
+            {/* Pulsante rapido verso Calibrazione Bilancia */}
+            <div className="pt-2 border-t border-gray-100 flex items-center justify-between">
+              <span className="text-xs text-gray-500">
+                Hai sostituito o calibrato le celle di carico?
+              </span>
+              <button
+                onClick={() => setSelectedSection('scale_calib')}
+                className="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 active:scale-95 border border-amber-200 text-amber-800 text-xs font-bold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+              >
+                <Scale className="w-3.5 h-3.5 stroke-[2.2]" />
+                <span>Calibra Bilancia HX711</span>
+              </button>
+            </div>
+          </div>
+
+        </div>
+      )}
+
+      {/* 5. SEZIONE CALIBRAZIONE BILANCIA (PAGINA SERVIZIO TECNICO) */}
+      {selectedSection === 'scale_calib' && (
+        <div className="flex-1 overflow-hidden flex flex-col">
+          <ScaleCalibration onBack={() => setSelectedSection(null)} />
+        </div>
+      )}
+
+        </div>
+      )}
+
+      {/* Tastiera Virtuale Touch per digitazione nome modello */}
+      <VirtualKeyboard
+        isOpen={isKeyboardOpen}
+        title="Modello Google Gemini"
+        initialValue={modelName}
+        placeholder="es. gemini-2.5-flash"
+        actionLabel="Salva"
+        onSave={handleSaveModel}
+        onClose={() => setIsKeyboardOpen(false)}
+      />
+
+    </div>
+  );
+}

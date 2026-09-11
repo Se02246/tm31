@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" width="140" height="140">
+  <defs>
+    <filter id="shadow-cbt" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="-1" dy="3" stdDeviation="3.5" flood-color="#000000" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <!-- Background Circle -->
+  <circle cx="70" cy="70" r="58" fill="#ebebeb" filter="url(#shadow-cbt)"/>
+
+  <!-- Thermometer -->
+  <g fill="#113c2b">
+    <!-- Bulb at Bottom -->
+    <circle cx="70" cy="91" r="9.5"/>
+
+    <!-- Stem -->
+    <rect x="65.5" y="44" width="9" height="42" rx="4.5"/>
+
+    <!-- Degree Symbol -->
+    <circle cx="82" cy="44" r="3.2"/>
+  </g>
+
+  <!-- Inner Thermometer Line (Negative Space) -->
+  <line x1="70" y1="48" x2="70" y2="70" stroke="#ebebeb" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- Water Waves -->
+  <g fill="none" stroke="#113c2b" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Left Waves -->
+    <path d="M 38 66 C 42 62, 46 62, 50 66 C 54 70, 58 70, 61 66"/>
+    <path d="M 38 78 C 42 74, 46 74, 50 78 C 54 82, 58 82, 61 78"/>
+
+    <!-- Right Waves -->
+    <path d="M 79 66 C 82 62, 86 62, 90 66 C 94 70, 98 70, 102 66"/>
+    <path d="M 79 78 C 82 74, 86 74, 90 78 C 94 82, 98 82, 102 78"/>
+  </g>
+</svg>

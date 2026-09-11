@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  bimby-smart:
+    build: .
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./src:/app/src
+      - ./public:/app/public
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2G

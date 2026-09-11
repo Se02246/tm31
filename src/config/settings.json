@@ -1,0 +1,10 @@
+{
+  "geminiModel": "gemini-3.7-flash",
+  "cookidooZoom": 0.7,
+  "scaleCalibration": {
+    "calibrationFactor": 420,
+    "zeroOffset": 8388590,
+    "knownWeightGrams": 1000,
+    "lastCalibratedAt": "2026-09-11T12:21:44.401Z"
+  }
+}

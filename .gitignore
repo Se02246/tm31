@@ -1,0 +1,43 @@
+# Dipendenze (radice e sottocartelle frontend)
+node_modules/
+**/node_modules/
+
+# Variabili d'ambiente e segreti (CRITICO)
+.env
+.env.*
+!.env.example
+
+# Build & Bundling (Vite ed Electron)
+dist/
+dist-ssr/
+build/
+out/
+dist-electron/
+release/
+*.exe
+*.AppImage
+
+# Log
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor e IDE
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# File di sistema (Windows & macOS)
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
