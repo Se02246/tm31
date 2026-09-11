@@ -3,8 +3,8 @@
   "cookidooZoom": 0.7,
   "scaleCalibration": {
     "calibrationFactor": 420,
-    "zeroOffset": 8388590,
+    "zeroOffset": 8388608,
     "knownWeightGrams": 1000,
-    "lastCalibratedAt": "2026-09-11T12:21:44.401Z"
+    "lastCalibratedAt": "2026-09-11T13:14:52.341Z"
   }
 }
