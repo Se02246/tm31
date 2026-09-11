@@ -14,6 +14,7 @@ const { recipeManager } = require('./recipe/recipeManager');
 const { getSettings, saveSettings } = require('./config/settingsManager');
 const { scanNetworks, getCurrentConnection, connectToNetwork, disconnectNetwork } = require('./network/wifiManager');
 const backlightManager = require('./hardware/backlightManager');
+const updater = require('./system/updater');
 const config = require('./config');
 
 const app = express();
@@ -195,6 +196,30 @@ io.on('connection', async (socket) => {
 
     // Invia stato interlock iniziale
     socket.emit('INTERLOCK_STATE', interlock.getStatus());
+
+    // Invia stato aggiornamento software OTA iniziale
+    socket.emit('OTA_STATUS', updater.getStatus());
+
+    // Trigger aggiornamento OTA da socket
+    socket.on('START_OTA_UPDATE', async (payload, callback) => {
+        try {
+            const status = await updater.startUpdate({
+                force: Boolean(payload?.force),
+                branch: payload?.branch || 'main',
+                pm2Process: payload?.pm2Process || 'all',
+                io
+            });
+            if (typeof callback === 'function') callback({ success: true, status });
+        } catch (err) {
+            if (typeof callback === 'function') callback({ success: false, error: err.message });
+        }
+    });
+
+    socket.on('GET_OTA_STATUS', (callback) => {
+        const status = updater.getStatus();
+        if (typeof callback === 'function') callback(status);
+        else socket.emit('OTA_STATUS', status);
+    });
 
     // Impostazione attenuazione display da socket
     socket.on('SET_SCREEN_DIMMED', (data) => {
@@ -995,6 +1020,50 @@ app.post('/api/system/interlock/simulate', (req, res) => {
     } catch (err) {
         console.error('[API] Errore /api/system/interlock/simulate:', err);
         return res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// =============================================
+// REST API AGGIORNAMENTO SOFTWARE OTA (Over-The-Air)
+// =============================================
+
+// Info versione attuale e commit Git
+app.get('/api/system/version', (req, res) => {
+    try {
+        const info = updater.getVersionInfo();
+        return res.json({ success: true, ...info });
+    } catch (err) {
+        console.error('[API] Errore GET /api/system/version:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Verifica presenza nuovi aggiornamenti remoti su GitHub
+app.get('/api/system/update/check', async (req, res) => {
+    try {
+        const branch = req.query.branch || 'main';
+        const result = await updater.checkForUpdates(branch);
+        return res.json(result);
+    } catch (err) {
+        console.error('[API] Errore GET /api/system/update/check:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Stato attuale e log recenti del processo di aggiornamento
+app.get('/api/system/update/status', (req, res) => {
+    return res.json({ success: true, ...updater.getStatus() });
+});
+
+// Avvia l'aggiornamento OTA (lancia scripts/ota_update.sh con streaming logs)
+app.post('/api/system/update', async (req, res) => {
+    try {
+        const { force, branch, pm2Process } = req.body || {};
+        const status = await updater.startUpdate({ force, branch, pm2Process, io });
+        return res.json({ success: true, message: 'Aggiornamento OTA avviato', status });
+    } catch (err) {
+        console.error('[API] Errore POST /api/system/update:', err);
+        return res.status(400).json({ success: false, error: err.message });
     }
 });
 

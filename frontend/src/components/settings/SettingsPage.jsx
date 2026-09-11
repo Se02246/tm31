@@ -25,12 +25,14 @@ import {
   Moon,
   Sun,
   ShieldCheck,
-  ShieldAlert
+  ShieldAlert,
+  CloudDownload
 } from 'lucide-react';
 import VirtualKeyboard from '../common/VirtualKeyboard';
 import WifiSettings from './WifiSettings';
 import CookidooSettings from './CookidooSettings';
 import ScaleCalibration from './ScaleCalibration';
+import UpdateModal from './UpdateModal';
 
 const formatUptime = (seconds) => {
   if (typeof seconds !== 'number' || isNaN(seconds)) return 'N/D';
@@ -64,6 +66,12 @@ export default function SettingsPage({ onOpenCookidoo }) {
   const [toastMessage, setToastMessage] = useState(null);
   const [testStatus, setTestStatus] = useState(null); // null, 'testing', 'success', 'error'
   const [testResult, setTestResult] = useState(null);
+
+  // Aggiornamenti OTA & Versione Git
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
+  const [versionInfo, setVersionInfo] = useState(null);
+  const [updateCheck, setUpdateCheck] = useState(null);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
 
   // Informazioni di sistema realmente rilevate
   const [systemInfo, setSystemInfo] = useState(null);
@@ -237,6 +245,7 @@ export default function SettingsPage({ onOpenCookidoo }) {
     socket.on('COOKIDOO_DATA_CLEARED', handleCookidooCleared);
     socket.on('INTERLOCK_STATE', handleInterlockState);
 
+    fetchVersionInfo();
     const intervalId = setInterval(fetchSettings, 10000);
 
     return () => {
@@ -251,6 +260,38 @@ export default function SettingsPage({ onOpenCookidoo }) {
       clearInterval(intervalId);
     };
   }, []);
+
+  const fetchVersionInfo = async () => {
+    try {
+      const res = await fetch('/api/system/version');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setVersionInfo(data);
+        }
+      }
+    } catch (err) {}
+  };
+
+  const checkOtaUpdates = async () => {
+    setIsCheckingUpdate(true);
+    try {
+      const res = await fetch('/api/system/update/check');
+      if (res.ok) {
+        const data = await res.json();
+        setUpdateCheck(data);
+        if (data.updateAvailable) {
+          showToast('Nuovo aggiornamento disponibile su GitHub!');
+        } else if (data.success) {
+          showToast('Il sistema è aggiornato all\'ultima versione.');
+        }
+      }
+    } catch (err) {
+      showToast('Errore verifica aggiornamenti');
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
 
   const handleSaveModel = async (newModel) => {
     if (!newModel || typeof newModel !== 'string' || newModel.trim().length === 0) {
@@ -490,7 +531,44 @@ export default function SettingsPage({ onOpenCookidoo }) {
               </div>
             </div>
 
-            {/* Voce 5: Calibrazione Bilancia (HX711) - Menu Tecnico */}
+            {/* Voce 5: Aggiornamenti di Sistema (OTA) */}
+            <div
+              onClick={() => {
+                setSelectedSection('ota');
+                fetchVersionInfo();
+              }}
+              className="bg-white hover:bg-gray-50/80 active:scale-[0.99] border border-gray-200/80 rounded-2xl p-3 flex items-center justify-between cursor-pointer transition-all shadow-2xs group"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-11 h-11 rounded-xl bg-teal-50 border border-teal-100 flex items-center justify-center text-teal-600 shrink-0 group-hover:scale-105 transition-transform">
+                  <CloudDownload className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900 group-hover:text-teal-600 transition-colors">
+                      Aggiornamenti di Sistema
+                    </span>
+                    {versionInfo?.commit ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold font-mono bg-teal-50 text-teal-700 border border-teal-200">
+                        {versionInfo.commit}
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-50 text-teal-700 border border-teal-200">
+                        OTA GitHub
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                    Verifica modifiche da GitHub, ricompilazione Vite e riavvio PM2
+                  </p>
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-full bg-gray-50 group-hover:bg-teal-50 flex items-center justify-center text-gray-400 group-hover:text-teal-600 transition-colors shrink-0 ml-2">
+                <ChevronRight className="w-5 h-5 stroke-[2.2]" />
+              </div>
+            </div>
+
+            {/* Voce 6: Calibrazione Bilancia (HX711) - Menu Tecnico */}
             <div
               onClick={() => setSelectedSection('scale_calib')}
               className="bg-white hover:bg-gray-50/80 active:scale-[0.99] border border-gray-200/80 rounded-2xl p-3 flex items-center justify-between cursor-pointer transition-all shadow-2xs group"
@@ -574,6 +652,14 @@ export default function SettingsPage({ onOpenCookidoo }) {
                     <Scale className="w-3.5 h-3.5 stroke-[2.2]" />
                   </div>
                   <span className="text-xs font-bold text-gray-900">Calibrazione Bilancia (HX711)</span>
+                </>
+              )}
+              {selectedSection === 'ota' && (
+                <>
+                  <div className="w-6 h-6 rounded-lg bg-teal-50 border border-teal-100 flex items-center justify-center text-teal-600">
+                    <CloudDownload className="w-3.5 h-3.5 stroke-[2.2]" />
+                  </div>
+                  <span className="text-xs font-bold text-gray-900">Aggiornamenti di Sistema (OTA)</span>
                 </>
               )}
             </div>
@@ -927,8 +1013,76 @@ export default function SettingsPage({ onOpenCookidoo }) {
         </div>
       )}
 
+      {/* 6. SEZIONE AGGIORNAMENTI DI SISTEMA (OTA) */}
+      {selectedSection === 'ota' && (
+        <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-3">
+          {/* Card Stato Versione */}
+          <div className="bg-white border border-gray-200/80 rounded-2xl p-4 shadow-2xs flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-teal-50 border border-teal-100 flex items-center justify-center text-teal-600">
+                  <CloudDownload className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-gray-900">Versione Software Bimby TM31</h4>
+                  <p className="text-xs text-gray-500">Stato repository Git e build frontend</p>
+                </div>
+              </div>
+
+              <span className="px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-teal-50 text-teal-700 border border-teal-200">
+                Branch: {versionInfo?.branch || 'main'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="p-2.5 rounded-xl bg-gray-50 border border-gray-100">
+                <span className="text-[11px] text-gray-400 block mb-0.5">Commit Locale:</span>
+                <span className="font-mono font-bold text-gray-800">{versionInfo?.commit || 'N/D'}</span>
+              </div>
+              <div className="p-2.5 rounded-xl bg-gray-50 border border-gray-100">
+                <span className="text-[11px] text-gray-400 block mb-0.5">Data Rilascio:</span>
+                <span className="font-bold text-gray-800">{versionInfo?.date || 'N/D'}</span>
+              </div>
+              <div className="col-span-2 p-2.5 rounded-xl bg-gray-50 border border-gray-100">
+                <span className="text-[11px] text-gray-400 block mb-0.5">Ultima Modifica:</span>
+                <span className="text-gray-700 font-medium truncate block">{versionInfo?.message || 'Nessuna descrizione commit'}</span>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-gray-100 flex items-center justify-between gap-2">
+              <button
+                onClick={checkOtaUpdates}
+                disabled={isCheckingUpdate}
+                className="px-3 py-2 rounded-xl bg-white hover:bg-gray-50 active:scale-95 border border-gray-200 text-gray-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isCheckingUpdate ? 'animate-spin' : ''}`} />
+                <span>{isCheckingUpdate ? 'Controllo in corso...' : 'Verifica GitHub'}</span>
+              </button>
+
+              <button
+                onClick={() => setIsUpdateModalOpen(true)}
+                className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 active:scale-95 text-white text-xs font-bold flex items-center gap-2 transition-all shadow-md cursor-pointer"
+              >
+                <CloudDownload className="w-4 h-4" />
+                <span>Verifica e Aggiorna</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
+
+        </div>
+      )}
+
+      {/* Modale a Schermo Intero per Aggiornamento OTA */}
+      <UpdateModal
+        isOpen={isUpdateModalOpen}
+        onClose={() => {
+          setIsUpdateModalOpen(false);
+          fetchVersionInfo();
+        }}
+        initialVersionInfo={versionInfo}
+      />
 
       {/* Tastiera Virtuale Touch per digitazione nome modello */}
       <VirtualKeyboard

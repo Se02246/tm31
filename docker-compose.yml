@@ -8,6 +8,7 @@ services:
     volumes:
       - ./src:/app/src
       - ./public:/app/public
+      - ./scripts:/app/scripts
     deploy:
       resources:
         limits:
