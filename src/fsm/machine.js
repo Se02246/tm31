@@ -1,5 +1,6 @@
 const { setup, fromPromise, assign } = require('xstate');
-const { servo, bimbySerial, interlock } = require('../hardware/hardwareFactory');
+const config = require('../config');
+const { servo, bimbySerial, interlock, piezoBuzzer } = require('../hardware/hardwareFactory');
 
 function toHex(val) {
     return val.toString(16).toUpperCase().padStart(2, '0');
@@ -17,11 +18,14 @@ const lockServo = fromPromise(async () => {
     console.log('[FSM] Azione: Chiusura coperchio...');
 
     // 1. Verifica preliminare fisica: boccale inserito nella base
-    if (!interlock.isBowlPresent()) {
-        console.error('❌ [FSM INTERLOCK] Boccale non rilevato nella sede del Bimby!');
-        const err = new Error('Boccale non inserito');
-        err.code = 'BOWL_NOT_PRESENT';
-        throw err;
+    const isBowlSafe = interlock.isBowlPresent();
+    if (!isBowlSafe) {
+        if (!config.isMock || interlock.simulateBowlMissing) {
+            console.error('❌ [FSM INTERLOCK] Boccale non rilevato nella sede del Bimby!');
+            const err = new Error('Boccale non inserito');
+            err.code = 'BOWL_NOT_PRESENT';
+            throw err;
+        }
     }
 
     // 2. Movimentazione servomotore braccia di chiusura (90°)
@@ -33,12 +37,14 @@ const lockServo = fromPromise(async () => {
     // 4. Verifica fisica microinterruttore coperchio / braccia bloccate a finecorsa
     const isLidSafe = interlock.isLidLocked();
     if (!isLidSafe) {
-        console.error('⚠️ [FSM INTERLOCK] Ostacolo rilevato o coperchio disallineato! Riapertura immediata servo...');
-        // Manovra di disimpegno immediata: riapre il servo per non sottoporre l'MG996R a sforzo di stallo
-        await servo.unlock();
-        const err = new Error('Ostacolo o coperchio non chiuso correttamente');
-        err.code = 'LID_NOT_LOCKED';
-        throw err;
+        if (!config.isMock || interlock.simulateObstacle) {
+            console.error('⚠️ [FSM INTERLOCK] Ostacolo rilevato o coperchio disallineato! Riapertura immediata servo...');
+            // Manovra di disimpegno immediata: riapre il servo per non sottoporre l'MG996R a sforzo di stallo
+            await servo.unlock();
+            const err = new Error('Ostacolo o coperchio non chiuso correttamente');
+            err.code = 'LID_NOT_LOCKED';
+            throw err;
+        }
     }
 
     console.log('✅ [FSM INTERLOCK] Microinterruttori confermati: Coperchio e Boccale OK. Pronto per avvio lame.');
@@ -88,6 +94,14 @@ const bimbyMachine = setup({
       console.log('[FSM] Fine tempo: Arresto immediato motore e riscaldamento, allarme istantaneo...');
       motorStopTime = Date.now();
       bimbySerial.sendCommand('52 50 00 00 00 0D');
+    },
+    startAlarmBuzzer: () => {
+      console.log('[FSM] Avvio jingle sonoro allarme piezo...');
+      piezoBuzzer.playTimerDone();
+    },
+    stopAlarmBuzzer: () => {
+      console.log('[FSM] Disattivazione allarme piezo...');
+      piezoBuzzer.stop();
     },
     updateHardware: ({ context }) => {
         console.log(`[FSM] Aggiornamento parametri context: Temp=${context.targetTemp}°C, Vel=${context.targetSpeed}, Dir=${context.antiClockwise ? 'Antiorario' : 'Orario'}`);
@@ -251,18 +265,29 @@ const bimbyMachine = setup({
       }
     },
     alarm: {
+      entry: ['startAlarmBuzzer'],
+      exit: ['stopAlarmBuzzer'],
       on: {
         ACK_ALARM: { 
           target: 'unlocking_lid',
-          actions: assign({ targetSpeed: 0, targetTemp: 0, targetTime: 0, antiClockwise: false, mode: 'normal' })
+          actions: [
+            assign({ targetSpeed: 0, targetTemp: 0, targetTime: 0, antiClockwise: false, mode: 'normal' }),
+            'stopAlarmBuzzer'
+          ]
         },
         STOP: { 
           target: 'unlocking_lid',
-          actions: assign({ targetSpeed: 0, targetTemp: 0, targetTime: 0, antiClockwise: false, mode: 'normal' })
+          actions: [
+            assign({ targetSpeed: 0, targetTemp: 0, targetTime: 0, antiClockwise: false, mode: 'normal' }),
+            'stopAlarmBuzzer'
+          ]
         },
         RESET: { 
           target: 'unlocking_lid',
-          actions: assign({ targetSpeed: 0, targetTemp: 0, targetTime: 0, antiClockwise: false, mode: 'normal' })
+          actions: [
+            assign({ targetSpeed: 0, targetTemp: 0, targetTime: 0, antiClockwise: false, mode: 'normal' }),
+            'stopAlarmBuzzer'
+          ]
         }
       }
     },

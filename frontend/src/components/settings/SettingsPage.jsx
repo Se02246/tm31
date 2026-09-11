@@ -26,13 +26,16 @@ import {
   Sun,
   ShieldCheck,
   ShieldAlert,
-  CloudDownload
+  CloudDownload,
+  Power,
+  Volume2
 } from 'lucide-react';
 import VirtualKeyboard from '../common/VirtualKeyboard';
 import WifiSettings from './WifiSettings';
 import CookidooSettings from './CookidooSettings';
 import ScaleCalibration from './ScaleCalibration';
 import UpdateModal from './UpdateModal';
+import PowerModal from './PowerModal';
 
 const formatUptime = (seconds) => {
   if (typeof seconds !== 'number' || isNaN(seconds)) return 'N/D';
@@ -73,6 +76,9 @@ export default function SettingsPage({ onOpenCookidoo }) {
   const [updateCheck, setUpdateCheck] = useState(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
 
+  // Modale Spegnimento & Riavvio
+  const [isPowerModalOpen, setIsPowerModalOpen] = useState(false);
+
   // Informazioni di sistema realmente rilevate
   const [systemInfo, setSystemInfo] = useState(null);
   const [isSocketConnected, setIsSocketConnected] = useState(socket.connected);
@@ -84,11 +90,65 @@ export default function SettingsPage({ onOpenCookidoo }) {
     touchPoints: typeof navigator !== 'undefined' ? navigator.maxTouchPoints || 0 : 0
   });
 
+  // Stato attenuazione luminosità display
+  const [dimmingSettings, setDimmingSettings] = useState({
+    enabled: true,
+    dimPercentage: 15,
+    timeoutSeconds: 300
+  });
+
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage(null);
     }, 3500);
+  };
+
+  // Salvataggio impostazioni di attenuazione luminosità
+  const saveDimmingSettings = async (partial) => {
+    const updated = { ...dimmingSettings, ...partial };
+    setDimmingSettings(updated);
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dimming: updated })
+      });
+      if (res.ok) {
+        showToast('Impostazioni luminosità salvate');
+      } else {
+        showToast('Errore nel salvataggio impostazioni');
+      }
+    } catch (e) {
+      showToast('Errore di connessione');
+    }
+  };
+
+  // Test e controllo hardware Buzzer Piezoelettrico PWM (GPIO 18)
+  const handleTestBuzzer = async (action = 'beep') => {
+    try {
+      await fetch('/api/system/buzzer/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, frequency: 2500, duration: action === 'timer_done' ? null : 150 })
+      });
+      showToast(action === 'timer_done' ? 'Buzzer: Avviato jingle fine cottura TM31' : 'Buzzer: Bip inviato (2500Hz)');
+    } catch (e) {
+      showToast('Errore test buzzer');
+    }
+  };
+
+  const handleStopBuzzer = async () => {
+    try {
+      await fetch('/api/system/buzzer/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'stop' })
+      });
+      showToast('Buzzer silenziato');
+    } catch (e) {
+      showToast('Errore stop buzzer');
+    }
   };
 
   // Caricamento impostazioni e metriche reali dal server
@@ -100,6 +160,9 @@ export default function SettingsPage({ onOpenCookidoo }) {
         const data = await res.json();
         if (data?.settings?.geminiModel) {
           setModelName(data.settings.geminiModel);
+        }
+        if (data?.settings?.dimming) {
+          setDimmingSettings(data.settings.dimming);
         }
         if (typeof data?.hasApiKey === 'boolean') {
           setHasApiKey(data.hasApiKey);
@@ -212,6 +275,9 @@ export default function SettingsPage({ onOpenCookidoo }) {
     const handleSettingsUpdated = (data) => {
       if (data?.settings?.geminiModel) {
         setModelName(data.settings.geminiModel);
+      }
+      if (data?.settings?.dimming) {
+        setDimmingSettings(data.settings.dimming);
       }
       if (typeof data?.hasApiKey === 'boolean') {
         setHasApiKey(data.hasApiKey);
@@ -353,7 +419,7 @@ export default function SettingsPage({ onOpenCookidoo }) {
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-[#f8fafc] text-gray-800 select-none overflow-hidden px-5 py-3 relative">
+    <div className="flex-1 min-h-0 flex flex-col h-full bg-[#f8fafc] text-gray-800 select-none overflow-hidden px-5 py-3 relative">
       
       {/* Toast Notifica Flottante */}
       {toastMessage && (
@@ -364,7 +430,7 @@ export default function SettingsPage({ onOpenCookidoo }) {
       )}
 
       {!selectedSection ? (
-        <div className="flex-1 flex flex-col h-full overflow-hidden">
+        <div className="flex-1 min-h-0 flex flex-col h-full overflow-hidden">
           {/* Intestazione Sezione con Secret Tap per sbloccare il menu tecnico */}
           <div 
             onClick={() => {
@@ -393,8 +459,8 @@ export default function SettingsPage({ onOpenCookidoo }) {
             </div>
           </div>
 
-          {/* Lista Voci Impostazioni - Ottimizzata Touchscreen per 800x480 */}
-          <div className="flex-1 flex flex-col justify-center gap-2.5 max-w-2xl mx-auto w-full py-0.5">
+          {/* Lista Voci Impostazioni - Con Supporto Scorrimento Touch per 800x480 */}
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1.5 pb-6 flex flex-col gap-2.5 max-w-2xl mx-auto w-full touch-pan-y overscroll-contain">
             {/* Voce 1: Rete Wi-Fi */}
             <div
               onClick={() => {
@@ -499,7 +565,41 @@ export default function SettingsPage({ onOpenCookidoo }) {
               </div>
             </div>
 
-            {/* Voce 4: Diagnostica Hardware */}
+            {/* Voce 4: Schermo & Luminosità */}
+            <div
+              onClick={() => setSelectedSection('display')}
+              className="bg-white hover:bg-gray-50/80 active:scale-[0.99] border border-gray-200/80 rounded-2xl p-3 flex items-center justify-between cursor-pointer transition-all shadow-2xs group"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-11 h-11 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-600 shrink-0 group-hover:scale-105 transition-transform">
+                  <Sun className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900 group-hover:text-amber-600 transition-colors">
+                      Schermo & Luminosità
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                      dimmingSettings.enabled
+                        ? 'bg-amber-50 text-amber-800 border-amber-200'
+                        : 'bg-gray-100 text-gray-500 border-gray-200'
+                    }`}>
+                      {dimmingSettings.enabled 
+                        ? `${dimmingSettings.dimPercentage}% • ${dimmingSettings.timeoutSeconds >= 60 ? `${Math.round(dimmingSettings.timeoutSeconds / 60)} min` : `${dimmingSettings.timeoutSeconds}s`}`
+                        : 'Disattivata'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                    Attenuazione automatica, percentuale luminosità (5-50%) e tempo inattività
+                  </p>
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-full bg-gray-50 group-hover:bg-amber-50 flex items-center justify-center text-gray-400 group-hover:text-amber-600 transition-colors shrink-0 ml-2">
+                <ChevronRight className="w-5 h-5 stroke-[2.2]" />
+              </div>
+            </div>
+
+            {/* Voce 5: Diagnostica Hardware */}
             <div
               onClick={() => setSelectedSection('diag')}
               className="bg-white hover:bg-gray-50/80 active:scale-[0.99] border border-gray-200/80 rounded-2xl p-3 flex items-center justify-between cursor-pointer transition-all shadow-2xs group"
@@ -595,6 +695,34 @@ export default function SettingsPage({ onOpenCookidoo }) {
                 <ChevronRight className="w-5 h-5 stroke-[2.2]" />
               </div>
             </div>
+
+            {/* Voce 7: Spegnimento & Riavvio */}
+            <div
+              onClick={() => setIsPowerModalOpen(true)}
+              className="bg-white hover:bg-rose-50/40 active:scale-[0.99] border border-gray-200/80 hover:border-rose-200 rounded-2xl p-3 flex items-center justify-between cursor-pointer transition-all shadow-2xs group"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-11 h-11 rounded-xl bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-500 shrink-0 group-hover:scale-105 transition-transform">
+                  <Power className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-gray-900 group-hover:text-rose-600 transition-colors">
+                      Spegnimento e Riavvio
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                      Alimentazione
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                    Arresto sicuro del motore, sblocco coperchio e spegnimento del Bimby
+                  </p>
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-full bg-gray-50 group-hover:bg-rose-50 flex items-center justify-center text-gray-400 group-hover:text-rose-600 transition-colors shrink-0 ml-2">
+                <ChevronRight className="w-5 h-5 stroke-[2.2]" />
+              </div>
+            </div>
           </div>
         </div>
       ) : (
@@ -636,6 +764,14 @@ export default function SettingsPage({ onOpenCookidoo }) {
                     <Sparkles className="w-3.5 h-3.5 stroke-[2.2]" />
                   </div>
                   <span className="text-xs font-bold text-gray-900">Modello IA (Gemini)</span>
+                </>
+              )}
+              {selectedSection === 'display' && (
+                <>
+                  <div className="w-6 h-6 rounded-lg bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-600">
+                    <Sun className="w-3.5 h-3.5 stroke-[2.2]" />
+                  </div>
+                  <span className="text-xs font-bold text-gray-900">Schermo & Luminosità</span>
                 </>
               )}
               {selectedSection === 'diag' && (
@@ -970,22 +1106,75 @@ export default function SettingsPage({ onOpenCookidoo }) {
                 <Moon className="w-4 h-4 text-indigo-500" />
                 <div className="flex flex-col">
                   <span className="text-xs font-bold text-gray-800">
-                    Protezione Burn-in Schermo: <span className="text-[#00a651]">Attiva (5 min)</span>
+                    Protezione Burn-in Schermo:{' '}
+                    <span className={dimmingSettings.enabled ? 'text-[#00a651]' : 'text-gray-500'}>
+                      {dimmingSettings.enabled 
+                        ? `Attiva (${dimmingSettings.dimPercentage}% dopo ${dimmingSettings.timeoutSeconds >= 60 ? `${Math.round(dimmingSettings.timeoutSeconds / 60)} min` : `${dimmingSettings.timeoutSeconds}s`})`
+                        : 'Disattivata'}
+                    </span>
                   </span>
                   <span className="text-[11px] text-gray-500">
-                    Attenua automaticamente il display al 15% per salvaguardare il touchscreen
+                    {dimmingSettings.enabled 
+                      ? `Attenua automaticamente il display al ${dimmingSettings.dimPercentage}% per salvaguardare il touchscreen`
+                      : 'Attenuazione automatica disattivata nelle impostazioni'}
                   </span>
                 </div>
               </div>
-              <button
-                onClick={() => {
-                  window.dispatchEvent(new CustomEvent('trigger-screen-dim'));
-                }}
-                className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 active:scale-95 border border-indigo-200 text-indigo-800 text-xs font-bold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
-              >
-                <Moon className="w-3.5 h-3.5 stroke-[2.2]" />
-                <span>Test Attenuazione</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSelectedSection('display')}
+                  className="px-3 py-1.5 rounded-xl bg-gray-50 hover:bg-gray-100 active:scale-95 border border-gray-200 text-gray-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+                >
+                  <Sliders className="w-3.5 h-3.5 stroke-[2.2]" />
+                  <span>Configura</span>
+                </button>
+                <button
+                  onClick={() => {
+                    window.dispatchEvent(new CustomEvent('trigger-screen-dim'));
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 active:scale-95 border border-indigo-200 text-indigo-800 text-xs font-bold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+                >
+                  <Moon className="w-3.5 h-3.5 stroke-[2.2]" />
+                  <span>Test Attenuazione</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Speaker Piezoelettrico PWM (GPIO 18 / TM31) */}
+            <div className="pt-2.5 border-t border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Volume2 className="w-4 h-4 text-amber-500" />
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-gray-800">
+                    Speaker Piezoelettrico: <span className="text-[#00a651]">Hardware PWM (GPIO 18)</span>
+                  </span>
+                  <span className="text-[11px] text-gray-500">
+                    Onda quadra a 2500 Hz per avvisi, click manopola e allarme fine cottura TM31
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleTestBuzzer('beep')}
+                  className="px-3 py-1.5 rounded-xl bg-gray-50 hover:bg-gray-100 active:scale-95 border border-gray-200 text-gray-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+                >
+                  <Volume2 className="w-3.5 h-3.5 stroke-[2.2]" />
+                  <span>Test Bip</span>
+                </button>
+                <button
+                  onClick={() => handleTestBuzzer('timer_done')}
+                  className="px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 active:scale-95 border border-amber-200 text-amber-800 text-xs font-bold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+                >
+                  <Volume2 className="w-3.5 h-3.5 stroke-[2.2]" />
+                  <span>Test Allarme TM31</span>
+                </button>
+                <button
+                  onClick={handleStopBuzzer}
+                  className="px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 active:scale-95 border border-rose-200 text-rose-700 text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                >
+                  Stop
+                </button>
+              </div>
             </div>
 
             {/* Pulsante rapido verso Calibrazione Bilancia */}
@@ -1001,6 +1190,217 @@ export default function SettingsPage({ onOpenCookidoo }) {
                 <span>Calibra Bilancia HX711</span>
               </button>
             </div>
+          </div>
+
+        </div>
+      )}
+
+      {/* SEZIONE LUMINOSITÀ & ATTENUAZIONE SCHERMO */}
+      {selectedSection === 'display' && (
+        <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-3">
+          {/* Card 1: Attivazione Automatica */}
+          <div className="bg-white rounded-2xl p-4 border border-gray-200/80 shadow-2xs flex flex-col gap-3">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                  dimmingSettings.enabled 
+                    ? 'bg-amber-50 border border-amber-200 text-amber-600' 
+                    : 'bg-gray-100 border border-gray-200 text-gray-400'
+                }`}>
+                  <Sun className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-sm font-bold text-gray-900">
+                    Attenuazione Automatica Luminosità
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    Riduce la luminosità in caso di inattività per evitare burn-in e affaticamento visivo
+                  </span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => saveDimmingSettings({ enabled: !dimmingSettings.enabled })}
+                className={`px-4 py-2 rounded-xl font-bold text-xs transition-all flex items-center gap-2 cursor-pointer shadow-2xs active:scale-95 ${
+                  dimmingSettings.enabled
+                    ? 'bg-[#00a651] text-white hover:bg-[#009146]'
+                    : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${dimmingSettings.enabled ? 'bg-white animate-pulse' : 'bg-gray-400'}`} />
+                <span>{dimmingSettings.enabled ? 'ATTIVATA' : 'DISATTIVATA'}</span>
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-500 leading-relaxed">
+              Quando l'attenuazione è attiva, il display si scurisce gradualmente dopo il tempo di attesa configurato.
+              <strong className="text-gray-700"> Basta toccare lo schermo, ruotare la manopola o premere il tasto per riattivare istantaneamente il 100% della luminosità</strong>, senza perdere o bloccare alcun comando.
+            </p>
+          </div>
+
+          {/* Card 2: Percentuale di Luminosità Attenuata */}
+          <div className={`bg-white rounded-2xl p-4 border border-gray-200/80 shadow-2xs flex flex-col gap-3 transition-opacity ${
+            !dimmingSettings.enabled ? 'opacity-50 pointer-events-none' : 'opacity-100'
+          }`}>
+            <div className="flex items-center justify-between border-b border-gray-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <Moon className="w-4 h-4 text-indigo-500" />
+                <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
+                  Percentuale di Luminosità Attenuata
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-800 font-bold font-mono text-sm">
+                <span>{dimmingSettings.dimPercentage}%</span>
+                <span className="text-[10px] text-indigo-500 font-normal">luminosità</span>
+              </div>
+            </div>
+
+            {/* Barra Visuale di Anteprima Luminosità */}
+            <div className="relative h-9 rounded-xl overflow-hidden bg-gray-950 border border-gray-800 flex items-center px-4 justify-between">
+              <div 
+                className="absolute inset-y-0 left-0 bg-linear-to-r from-amber-600 via-amber-400 to-amber-300 transition-all duration-300 opacity-80"
+                style={{ width: `${Math.max(5, dimmingSettings.dimPercentage)}%` }}
+              />
+              <span className="relative z-10 text-[11px] font-bold text-white drop-shadow-sm flex items-center gap-1.5">
+                <Sun className="w-3.5 h-3.5" />
+                Anteprima Luminosità Display
+              </span>
+              <span className="relative z-10 text-[11px] font-mono font-bold text-white drop-shadow-sm">
+                {dimmingSettings.dimPercentage}%
+              </span>
+            </div>
+
+            {/* Preset Percentuale & Stepper */}
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <div className="flex items-center gap-1.5 flex-1 flex-wrap">
+                {[
+                  { val: 5, label: '5%' },
+                  { val: 10, label: '10%' },
+                  { val: 15, label: '15% ⭐' },
+                  { val: 25, label: '25%' },
+                  { val: 35, label: '35%' },
+                  { val: 50, label: '50%' }
+                ].map((preset) => (
+                  <button
+                    key={preset.val}
+                    onClick={() => saveDimmingSettings({ dimPercentage: preset.val })}
+                    className={`px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer active:scale-95 shadow-2xs ${
+                      dimmingSettings.dimPercentage === preset.val
+                        ? 'bg-[#00a651] text-white border border-[#009146]'
+                        : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Stepper - / + */}
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => saveDimmingSettings({ dimPercentage: Math.max(5, dimmingSettings.dimPercentage - 5) })}
+                  disabled={dimmingSettings.dimPercentage <= 5}
+                  className="w-9 h-9 rounded-xl bg-gray-50 hover:bg-gray-100 disabled:opacity-30 border border-gray-200 text-gray-700 font-bold text-base flex items-center justify-center cursor-pointer active:scale-95 transition-all"
+                >
+                  -
+                </button>
+                <button
+                  onClick={() => saveDimmingSettings({ dimPercentage: Math.min(80, dimmingSettings.dimPercentage + 5) })}
+                  disabled={dimmingSettings.dimPercentage >= 80}
+                  className="w-9 h-9 rounded-xl bg-gray-50 hover:bg-gray-100 disabled:opacity-30 border border-gray-200 text-gray-700 font-bold text-base flex items-center justify-center cursor-pointer active:scale-95 transition-all"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 3: Tempo di Inattività (Timeout) */}
+          <div className={`bg-white rounded-2xl p-4 border border-gray-200/80 shadow-2xs flex flex-col gap-3 transition-opacity ${
+            !dimmingSettings.enabled ? 'opacity-50 pointer-events-none' : 'opacity-100'
+          }`}>
+            <div className="flex items-center justify-between border-b border-gray-100 pb-2.5">
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4 text-emerald-600" />
+                <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
+                  Tempo di Inattività Prima dell'Attenuazione
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold font-mono text-sm">
+                <span>
+                  {dimmingSettings.timeoutSeconds >= 60 
+                    ? `${Math.floor(dimmingSettings.timeoutSeconds / 60)}m ${dimmingSettings.timeoutSeconds % 60 ? `${dimmingSettings.timeoutSeconds % 60}s` : ''}` 
+                    : `${dimmingSettings.timeoutSeconds}s`}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-500">
+              Seleziona dopo quanti secondi o minuti dall'ultima interazione (tocco o rotella) la luminosità deve abbassarsi.
+            </p>
+
+            {/* Preset Tempo Inattività & Stepper */}
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <div className="flex items-center gap-1.5 flex-1 flex-wrap">
+                {[
+                  { sec: 30, label: '30 sec ⚡' },
+                  { sec: 60, label: '1 min' },
+                  { sec: 120, label: '2 min' },
+                  { sec: 300, label: '5 min ⭐' },
+                  { sec: 600, label: '10 min' },
+                  { sec: 900, label: '15 min' }
+                ].map((preset) => (
+                  <button
+                    key={preset.sec}
+                    onClick={() => saveDimmingSettings({ timeoutSeconds: preset.sec })}
+                    className={`px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer active:scale-95 shadow-2xs ${
+                      dimmingSettings.timeoutSeconds === preset.sec
+                        ? 'bg-[#00a651] text-white border border-[#009146]'
+                        : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Stepper Tempo */}
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => saveDimmingSettings({ timeoutSeconds: Math.max(15, dimmingSettings.timeoutSeconds - 30) })}
+                  disabled={dimmingSettings.timeoutSeconds <= 15}
+                  className="px-2.5 h-9 rounded-xl bg-gray-50 hover:bg-gray-100 disabled:opacity-30 border border-gray-200 text-gray-700 font-bold text-xs flex items-center justify-center cursor-pointer active:scale-95 transition-all"
+                >
+                  -30s
+                </button>
+                <button
+                  onClick={() => saveDimmingSettings({ timeoutSeconds: Math.min(3600, dimmingSettings.timeoutSeconds + 30) })}
+                  disabled={dimmingSettings.timeoutSeconds >= 3600}
+                  className="px-2.5 h-9 rounded-xl bg-gray-50 hover:bg-gray-100 disabled:opacity-30 border border-gray-200 text-gray-700 font-bold text-xs flex items-center justify-center cursor-pointer active:scale-95 transition-all"
+                >
+                  +30s
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 4: Prova dal Vivo (Test Immediato) */}
+          <div className="bg-white rounded-2xl p-4 border border-gray-200/80 shadow-2xs flex items-center justify-between gap-4">
+            <div className="flex flex-col">
+              <span className="text-xs font-bold text-gray-800">
+                Test Immediato Effetto Attenuazione
+              </span>
+              <span className="text-[11px] text-gray-500">
+                Attiva subito l'attenuazione al {dimmingSettings.dimPercentage}%. Tocca un punto qualsiasi dello schermo per risvegliarlo.
+              </span>
+            </div>
+            <button
+              onClick={() => window.dispatchEvent(new CustomEvent('trigger-screen-dim'))}
+              className="px-4 py-2.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 active:scale-95 border border-indigo-200 text-indigo-800 text-xs font-bold flex items-center gap-2 shrink-0 transition-all shadow-2xs cursor-pointer"
+            >
+              <Moon className="w-4 h-4 stroke-[2.2]" />
+              <span>Prova Attenuazione</span>
+            </button>
           </div>
 
         </div>
@@ -1082,6 +1482,13 @@ export default function SettingsPage({ onOpenCookidoo }) {
           fetchVersionInfo();
         }}
         initialVersionInfo={versionInfo}
+      />
+
+      {/* Modale di Spegnimento e Riavvio in Sicurezza */}
+      <PowerModal
+        isOpen={isPowerModalOpen}
+        onClose={() => setIsPowerModalOpen(false)}
+        isCooking={systemInfo?.fsmState === 'cooking'}
       />
 
       {/* Tastiera Virtuale Touch per digitazione nome modello */}

@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { getDimmingSettings } = require('../config/settingsManager');
 
 class BacklightManager {
     constructor() {
@@ -40,31 +41,46 @@ class BacklightManager {
         return 255;
     }
 
-    setDimmed(dimmed) {
+    setDimmed(dimmed, percentage = null) {
         this.isDimmed = Boolean(dimmed);
+        const configDim = getDimmingSettings();
+        const pct = (typeof percentage === 'number' && percentage >= 5 && percentage <= 90)
+            ? percentage
+            : (configDim?.dimPercentage || 15);
+
         if (this.backlightPath) {
             try {
-                // Attenua la luminosità hardware al 15% del massimo
+                // Attenua la luminosità hardware alla percentuale specificata del massimo
                 const targetValue = this.isDimmed 
-                    ? Math.max(10, Math.round(this.maxBrightness * 0.15)) 
+                    ? Math.max(5, Math.round(this.maxBrightness * (pct / 100))) 
                     : this.maxBrightness;
                 const brightnessFile = path.join(this.backlightPath, 'brightness');
                 fs.writeFileSync(brightnessFile, String(targetValue), 'utf-8');
-                console.log(`💡 [BACKLIGHT] Luminosità hardware impostata a: ${targetValue}/${this.maxBrightness}`);
+                console.log(`💡 [BACKLIGHT] Luminosità hardware impostata a: ${targetValue}/${this.maxBrightness} (${this.isDimmed ? pct + '%' : '100%'})`);
             } catch (err) {
                 console.warn(`💡 [BACKLIGHT] Impossibile scrivere su brightness: ${err.message}`);
             }
         } else {
-            console.log(`💡 [BACKLIGHT] Modalità simulata: Schermo ${this.isDimmed ? 'ATTENUATO (Dimmed - 15%)' : 'ATTIVO (100%)'}`);
+            console.log(`💡 [BACKLIGHT] Modalità simulata: Schermo ${this.isDimmed ? `ATTENUATO (${pct}%)` : 'ATTIVO (100%)'}`);
         }
-        return { isDimmed: this.isDimmed, maxBrightness: this.maxBrightness };
+        return { 
+            isDimmed: this.isDimmed, 
+            maxBrightness: this.maxBrightness,
+            dimPercentage: pct,
+            enabled: configDim?.enabled !== false,
+            timeoutSeconds: configDim?.timeoutSeconds || 300
+        };
     }
 
     getStatus() {
+        const configDim = getDimmingSettings();
         return {
             isDimmed: this.isDimmed,
             hasHardwareBacklight: Boolean(this.backlightPath),
-            maxBrightness: this.maxBrightness
+            maxBrightness: this.maxBrightness,
+            dimPercentage: configDim?.dimPercentage || 15,
+            enabled: configDim?.enabled !== false,
+            timeoutSeconds: configDim?.timeoutSeconds || 300
         };
     }
 }

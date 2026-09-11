@@ -5,6 +5,11 @@
     "calibrationFactor": 420,
     "zeroOffset": 8388608,
     "knownWeightGrams": 1000,
-    "lastCalibratedAt": "2026-09-11T13:14:52.341Z"
+    "lastCalibratedAt": "2026-09-11T14:10:51.016Z"
+  },
+  "dimming": {
+    "enabled": true,
+    "dimPercentage": 15,
+    "timeoutSeconds": 300
   }
 }

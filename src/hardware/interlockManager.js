@@ -181,7 +181,14 @@ class InterlockManager extends EventEmitter {
     emitStateChange() {
         const status = this.getStatus();
         this.emit('state_change', status);
-        if (!status.bowlPresent || !status.lidLocked) {
+        // Emetti interlock_lost solo se la perdita di contatto è effettiva:
+        // - Su hardware reale Raspberry Pi: se uno dei pin GPIO microswitch si apre
+        // - In modalità mock / test mode: SOLO se l'utente ha esplicitamente attivato una simulazione di guasto
+        if (this.isHardwareAvailable) {
+            if (!status.bowlPresent || !status.lidLocked) {
+                this.emit('interlock_lost', status);
+            }
+        } else if (status.simulateObstacle || status.simulateBowlMissing) {
             this.emit('interlock_lost', status);
         }
     }

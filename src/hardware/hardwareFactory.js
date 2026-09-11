@@ -1,5 +1,6 @@
 const config = require('../config');
 const interlockManager = require('./interlockManager');
+const piezoBuzzer = require('./piezoBuzzer');
 
 let scale, servo, bimbySerial;
 
@@ -25,5 +26,6 @@ module.exports = {
     scale,
     servo,
     bimbySerial,
-    interlock: interlockManager
+    interlock: interlockManager,
+    piezoBuzzer
 };

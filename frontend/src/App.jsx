@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { socket } from './socket';
-import { RotateCcw, X, Home, BookOpen, Settings, Bell, Check, LayoutGrid, ArrowLeft, ArrowRight, RotateCw, AlertTriangle, Moon, Sun } from 'lucide-react';
+import { RotateCcw, X, Home, BookOpen, Settings, Bell, Check, LayoutGrid, ArrowLeft, ArrowRight, RotateCw, AlertTriangle } from 'lucide-react';
 import { MODE_COMPONENTS } from './components/modes';
 import SettingsPage from './components/settings/SettingsPage';
 import RecipeRunner from './components/recipe/RecipeRunner';
@@ -91,12 +91,19 @@ function App() {
   const [isStandby, setIsStandby] = useState(false);
   const [bootStage, setBootStage] = useState(1);
 
-  // Protezione Burn-In / Attenuazione Display (5 min di inattività totale)
+  // Protezione Burn-In / Attenuazione Display (configurabile da impostazioni)
+  const [dimmingSettings, setDimmingSettings] = useState({
+    enabled: true,
+    dimPercentage: 15,
+    timeoutSeconds: 300
+  });
+  const dimmingSettingsRef = useRef(dimmingSettings);
+  dimmingSettingsRef.current = dimmingSettings;
+
   const [isScreenDimmed, setIsScreenDimmed] = useState(false);
   const isScreenDimmedRef = useRef(false);
   isScreenDimmedRef.current = isScreenDimmed;
   const dimInactivityTimer = useRef(null);
-  const [dimClockTime, setDimClockTime] = useState('');
 
   const wakeUpScreen = () => {
     if (isScreenDimmedRef.current) {
@@ -112,15 +119,47 @@ function App() {
       clearTimeout(dimInactivityTimer.current);
       dimInactivityTimer.current = null;
     }
+
+    const configDim = dimmingSettingsRef.current;
+    if (!configDim || configDim.enabled === false) {
+      if (isScreenDimmedRef.current) {
+        setIsScreenDimmed(false);
+        isScreenDimmedRef.current = false;
+        socket.emit('SET_SCREEN_DIMMED', { dimmed: false });
+      }
+      return;
+    }
+
+    const timeoutMs = (configDim.timeoutSeconds || 300) * 1000;
+
     dimInactivityTimer.current = setTimeout(() => {
       // Non attenuare se la macchina è in allarme
       if (fsmStateRef.current !== 'ALARM') {
         setIsScreenDimmed(true);
         isScreenDimmedRef.current = true;
-        socket.emit('SET_SCREEN_DIMMED', { dimmed: true });
+        socket.emit('SET_SCREEN_DIMMED', { 
+          dimmed: true, 
+          dimPercentage: configDim.dimPercentage || 15 
+        });
       }
-    }, INACTIVITY_DIM_TIMEOUT);
+    }, timeoutMs);
   };
+
+  useEffect(() => {
+    if (dimmingSettings.enabled === false) {
+      if (isScreenDimmedRef.current) {
+        setIsScreenDimmed(false);
+        isScreenDimmedRef.current = false;
+        socket.emit('SET_SCREEN_DIMMED', { dimmed: false });
+      }
+      if (dimInactivityTimer.current) {
+        clearTimeout(dimInactivityTimer.current);
+        dimInactivityTimer.current = null;
+      }
+    } else {
+      resetDimTimer();
+    }
+  }, [dimmingSettings]);
 
   // Tab di navigazione (home, modes, recipes, settings)
   const [activeTab, setActiveTab] = useState('home');
@@ -316,6 +355,14 @@ function App() {
       const dimmed = Boolean(data && (data.isDimmed !== undefined ? data.isDimmed : data.dimmed));
       setIsScreenDimmed(dimmed);
       isScreenDimmedRef.current = dimmed;
+      if (data && (data.dimPercentage !== undefined || data.enabled !== undefined || data.timeoutSeconds !== undefined)) {
+        setDimmingSettings(prev => ({
+          ...prev,
+          enabled: data.enabled !== undefined ? Boolean(data.enabled) : prev.enabled,
+          dimPercentage: data.dimPercentage !== undefined ? Number(data.dimPercentage) : prev.dimPercentage,
+          timeoutSeconds: data.timeoutSeconds !== undefined ? Number(data.timeoutSeconds) : prev.timeoutSeconds
+        }));
+      }
     };
     socket.on('SCREEN_DIMMED_STATE', handleScreenDimmedState);
 
@@ -323,15 +370,60 @@ function App() {
     const handleTriggerScreenDim = () => {
       setIsScreenDimmed(true);
       isScreenDimmedRef.current = true;
-      socket.emit('SET_SCREEN_DIMMED', { dimmed: true });
+      socket.emit('SET_SCREEN_DIMMED', { 
+        dimmed: true,
+        dimPercentage: dimmingSettingsRef.current?.dimPercentage || 15
+      });
     };
     window.addEventListener('trigger-screen-dim', handleTriggerScreenDim);
 
     // Ricezione allerta immediata interlock (arresto emergenza o blocco)
     const handleInterlockAlert = (data) => {
+      if (isScreenDimmedRef.current) {
+        wakeUpScreen();
+      }
       setInterlockAlert(data);
     };
     socket.on('INTERLOCK_ALERT', handleInterlockAlert);
+
+    // Ricezione eventi hardware rotella encoder da backend
+    const handleSocketKnobTurn = (data) => {
+      const dir = Number(data?.direction || data?.delta || (data?.step > 0 ? 1 : -1)) || 1;
+      handleKnobTurn(dir);
+    };
+    socket.on('KNOB_TURN', handleSocketKnobTurn);
+
+    // Ricezione eventi hardware tasto fisico / click manopola da backend
+    const handleSocketPhysicalButton = (data) => {
+      wakeUpScreen();
+      resetInactivityTimer();
+      if (fsmStateRef.current === 'ALARM') {
+        sendCommand('ACK_ALARM');
+        setActiveWidget(null);
+      } else if (activeTabRef.current === 'home') {
+        const sequence = ['TIME', 'TEMP', 'SPEED'];
+        const currentIndex = sequence.indexOf(activeWidgetRef.current);
+        const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % sequence.length;
+        setActiveWidget(sequence[nextIndex]);
+      }
+    };
+    socket.on('PHYSICAL_BUTTON', handleSocketPhysicalButton);
+
+    fetch('/api/settings')
+      .then(r => r.json())
+      .then(data => {
+        if (data?.settings?.dimming) {
+          setDimmingSettings(data.settings.dimming);
+        }
+      })
+      .catch(() => {});
+
+    const handleSettingsUpdated = (data) => {
+      if (data?.settings?.dimming) {
+        setDimmingSettings(data.settings.dimming);
+      }
+    };
+    socket.on('SETTINGS_UPDATED', handleSettingsUpdated);
 
     fetch('/api/recipe/state')
       .then(r => r.json())
@@ -345,30 +437,26 @@ function App() {
       socket.off('RECIPE_STATE', handleRecipeState);
       socket.off('SERIAL_TX', handleSerialTx);
       socket.off('SCREEN_DIMMED_STATE', handleScreenDimmedState);
+      socket.off('SETTINGS_UPDATED', handleSettingsUpdated);
       socket.off('INTERLOCK_ALERT', handleInterlockAlert);
+      socket.off('KNOB_TURN', handleSocketKnobTurn);
+      socket.off('PHYSICAL_BUTTON', handleSocketPhysicalButton);
       window.removeEventListener('app-go-home', handleAppGoHome);
       window.removeEventListener('trigger-screen-dim', handleTriggerScreenDim);
     };
   }, []);
 
-  // Aggiornamento orologio salvaschermo quando attenuato
-  useEffect(() => {
-    if (!isScreenDimmed) return;
-    const updateClock = () => {
-      const now = new Date();
-      setDimClockTime(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-    };
-    updateClock();
-    const interval = setInterval(updateClock, 1000);
-    return () => clearInterval(interval);
-  }, [isScreenDimmed]);
-
   // Gestione Suono Allarme (e risveglio forzato schermo se attenuato)
   useEffect(() => {
-      if (fsmState === 'ALARM') {
+      if (fsmState === 'IDLE' && interlockAlert) {
+          setInterlockAlert(null);
+      }
+      if (fsmState === 'ALARM' || fsmState === 'ERROR') {
           if (isScreenDimmedRef.current) {
               wakeUpScreen();
           }
+      }
+      if (fsmState === 'ALARM') {
           if (!beepInterval.current) {
               playBeep();
               beepInterval.current = setInterval(playBeep, 800);
@@ -410,29 +498,27 @@ function App() {
   }, [activeWidget, expandedTimeMode]);
 
   // Reimposta il timer di inattività a qualsiasi tocco / click dell'utente sullo schermo
-  // e protegge da tocchi accidentali quando il display è attenuato (il primo tocco consuma l'evento e risveglia)
+  // e ripristina la luminosità senza MAI bloccare o consumare i comandi
   useEffect(() => {
       resetDimTimer();
 
-      const handleGlobalPointerCapture = (e) => {
+      const handleGlobalPointer = () => {
           if (isScreenDimmedRef.current) {
-              // Consuma il tocco: riattiva subito lo schermo senza attivare pulsanti sottostanti
-              e.stopPropagation();
-              e.preventDefault();
               wakeUpScreen();
-              return;
           }
           resetDimTimer();
           resetInactivityTimer();
       };
 
-      // Listener in fase di cattura (capture: true) per intercettare prima di qualsiasi componente
-      window.addEventListener('pointerdown', handleGlobalPointerCapture, { capture: true });
-      window.addEventListener('touchstart', handleGlobalPointerCapture, { capture: true });
+      // Listener passivi: catturano qualsiasi tocco/rotazione riattivando la luminosità senza interferire con i pulsanti
+      window.addEventListener('pointerdown', handleGlobalPointer, { passive: true });
+      window.addEventListener('touchstart', handleGlobalPointer, { passive: true });
+      window.addEventListener('wheel', handleGlobalPointer, { passive: true });
 
       return () => {
-          window.removeEventListener('pointerdown', handleGlobalPointerCapture, { capture: true });
-          window.removeEventListener('touchstart', handleGlobalPointerCapture, { capture: true });
+          window.removeEventListener('pointerdown', handleGlobalPointer);
+          window.removeEventListener('touchstart', handleGlobalPointer);
+          window.removeEventListener('wheel', handleGlobalPointer);
           if (dimInactivityTimer.current) {
               clearTimeout(dimInactivityTimer.current);
           }
@@ -476,7 +562,6 @@ function App() {
   const handleKnobTurn = (direction) => {
     if (isScreenDimmedRef.current) {
         wakeUpScreen();
-        return; // Consuma la rotazione iniziale per risvegliare senza alterare parametri al buio
     }
     resetDimTimer();
     resetInactivityTimer();
@@ -600,11 +685,7 @@ function App() {
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (isScreenDimmedRef.current) {
-        if (['ArrowUp', 'ArrowDown', 'Enter', ' '].includes(e.key)) {
-          e.preventDefault();
-          wakeUpScreen();
-          return;
-        }
+        wakeUpScreen();
       }
       resetDimTimer();
 
@@ -1626,38 +1707,14 @@ function App() {
         }}
       />
 
-      {/* Overlay Protezione Burn-in / Attenuazione Schermo (5 min inattività) */}
-      {isScreenDimmed && (
-        <div 
-          className="fixed inset-0 z-[9990] bg-black/90 backdrop-blur-xs flex flex-col items-center justify-center select-none cursor-pointer transition-opacity duration-700 animate-in fade-in"
-          onClickCapture={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            wakeUpScreen();
-          }}
-          onTouchStartCapture={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            wakeUpScreen();
-          }}
-        >
-          <div className="flex flex-col items-center text-center p-8 max-w-md pointer-events-none">
-            <div className="w-16 h-16 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white/40 mb-4 animate-pulse">
-              <Moon className="w-8 h-8 stroke-[1.5]" />
-            </div>
-            <div className="text-6xl font-extralight text-white/70 tracking-wider tabular-nums mb-2 font-mono">
-              {dimClockTime}
-            </div>
-            <div className="text-xs uppercase tracking-widest text-emerald-400/80 font-medium mb-8">
-              Bimby TM31 • Risparmio Energetico
-            </div>
-            <div className="px-5 py-2.5 rounded-full bg-white/10 border border-white/15 text-white/60 text-xs font-medium flex items-center gap-2 animate-pulse">
-              <Sun className="w-4 h-4 text-amber-400" />
-              <span>Tocca lo schermo o ruota la manopola per riattivare</span>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Attenuazione Luminosità Display (senza salvaschermo né blocco comandi) */}
+      <div 
+        aria-hidden="true"
+        className="fixed inset-0 z-[9990] bg-black pointer-events-none transition-opacity duration-700 ease-in-out"
+        style={{
+          opacity: isScreenDimmed ? (1 - ((dimmingSettings?.dimPercentage ?? 15) / 100)) : 0
+        }}
+      />
     </div>
   );
 }

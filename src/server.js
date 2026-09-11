@@ -6,7 +6,7 @@ const path = require('path');
 
 const { createActor } = require('xstate');
 const { bimbyMachine } = require('./fsm/machine');
-const { bimbySerial, scale, interlock } = require('./hardware/hardwareFactory');
+const { bimbySerial, scale, servo, interlock, piezoBuzzer } = require('./hardware/hardwareFactory');
 const { startSpigaMode, stopSpigaMode, getSpigaStatus } = require('./modes/spigaRunner');
 const { startHeartbeat } = require('./hardware/serialHeartbeat');
 const { parseRecipeStep, parseFullRecipeSteps, parseRecipeFromHtml } = require('./recipe/geminiParser');
@@ -15,6 +15,7 @@ const { getSettings, saveSettings } = require('./config/settingsManager');
 const { scanNetworks, getCurrentConnection, connectToNetwork, disconnectNetwork } = require('./network/wifiManager');
 const backlightManager = require('./hardware/backlightManager');
 const updater = require('./system/updater');
+const powerManager = require('./system/powerManager');
 const config = require('./config');
 
 const app = express();
@@ -81,6 +82,11 @@ interlock.on('interlock_lost', (status) => {
     const currentState = snapshot.value;
 
     if (currentState === 'cooking' || currentState === 'starting_motor') {
+        // In modalità mock / sviluppo, scatta l'arresto di emergenza SOLO se è stata richiesta esplicitamente una simulazione
+        if (config.isMock && !status.simulateObstacle && !status.simulateBowlMissing) {
+            return;
+        }
+
         console.error('🚨 [EMERGENCY STOP] INTERLOCK APERTO DURANTE IL FUNZIONAMENTO! Arresto immediato lame...');
         // Arresto hardware immediato sul bus seriale
         bimbySerial.sendCommand('52 50 00 00 00 0D');
@@ -132,12 +138,13 @@ bimbyService.subscribe((snapshot) => {
         }
     }
 
-    // Quando la cottura termina ed entra nello stato ALARM, notifica la ricetta guidata e riattiva lo schermo
+    // Quando la cottura termina ed entra nello stato ALARM, avvia il buzzer TM31, notifica la ricetta guidata e riattiva lo schermo
     if (currentState === 'alarm' && previousState !== 'alarm') {
         if (backlightManager.getStatus().isDimmed) {
             backlightManager.setDimmed(false);
             io.emit('SCREEN_DIMMED_STATE', backlightManager.getStatus());
         }
+        piezoBuzzer.playTimerDone();
         if (recipeManager.hasActiveRecipe()) {
             recipeManager.setStepCompleted(true);
             io.emit('STEP_COMPLETED', {
@@ -145,6 +152,8 @@ bimbyService.subscribe((snapshot) => {
                 step: recipeManager.getCurrentStep()
             });
         }
+    } else if (previousState === 'alarm' && currentState !== 'alarm') {
+        piezoBuzzer.stop();
     } else if (previousState === 'cooking' && currentState !== 'cooking' && currentState !== 'alarm') {
         // Se la macchina si arresta prima del tempo (es. stop fisico o rotella a zero)
         if (recipeManager.hasActiveRecipe() && recipeManager.isStepRunning) {
@@ -221,10 +230,28 @@ io.on('connection', async (socket) => {
         else socket.emit('OTA_STATUS', status);
     });
 
+    // Gestione comando spegnimento/riavvio di sicurezza da socket
+    socket.on('SYSTEM_POWER_COMMAND', async (data, callback) => {
+        try {
+            const action = data?.action || 'shutdown';
+            const result = await powerManager.executePowerAction({
+                action,
+                io,
+                bimbyService,
+                bimbySerial,
+                servo
+            });
+            if (typeof callback === 'function') callback({ success: true, ...result });
+        } catch (err) {
+            if (typeof callback === 'function') callback({ success: false, error: err.message });
+        }
+    });
+
     // Impostazione attenuazione display da socket
     socket.on('SET_SCREEN_DIMMED', (data) => {
         const dimmed = Boolean(data && (data.dimmed !== undefined ? data.dimmed : data.isDimmed));
-        const status = backlightManager.setDimmed(dimmed);
+        const pct = (data && data.dimPercentage !== undefined) ? Number(data.dimPercentage) : null;
+        const status = backlightManager.setDimmed(dimmed, pct);
         io.emit('SCREEN_DIMMED_STATE', status);
     });
 
@@ -251,6 +278,15 @@ io.on('connection', async (socket) => {
     });
 
     socket.on('CMD', (payload) => {
+        if (payload.type === 'ACK_ALARM' || payload.type === 'STOP' || payload.type === 'RESET') {
+            piezoBuzzer.stop();
+        }
+
+        if (backlightManager.getStatus().isDimmed) {
+            backlightManager.setDimmed(false);
+            io.emit('SCREEN_DIMMED_STATE', backlightManager.getStatus());
+        }
+
         if (payload.type === 'SET_TIME' || payload.type === 'RESET' || payload.type === 'STOP') {
             lastTimeModification = Date.now();
         }
@@ -276,6 +312,35 @@ io.on('connection', async (socket) => {
         }
 
         bimbyService.send(payload);
+    });
+
+    // Inoltro eventi hardware rotella encoder (con risveglio schermo)
+    socket.on('KNOB_TURN', (data) => {
+        if (backlightManager.getStatus().isDimmed) {
+            backlightManager.setDimmed(false);
+            io.emit('SCREEN_DIMMED_STATE', backlightManager.getStatus());
+        }
+        io.emit('KNOB_TURN', data);
+    });
+
+    // Inoltro eventi tasto fisico / click manopola (con risveglio schermo e spegnimento allarme)
+    socket.on('PHYSICAL_BUTTON', (data) => {
+        if (bimbyService.getSnapshot().value === 'alarm') {
+            piezoBuzzer.stop();
+        }
+        if (backlightManager.getStatus().isDimmed) {
+            backlightManager.setDimmed(false);
+            io.emit('SCREEN_DIMMED_STATE', backlightManager.getStatus());
+        }
+        io.emit('PHYSICAL_BUTTON', data);
+    });
+
+    // Test manuale buzzer da socket
+    socket.on('BUZZER_TEST', (data) => {
+        const action = data?.action || 'beep';
+        if (action === 'timer_done') piezoBuzzer.playTimerDone();
+        else if (action === 'stop') piezoBuzzer.stop();
+        else piezoBuzzer.beep(Number(data?.frequency) || 2500, Number(data?.duration) || 100);
     });
 
     // Eventi Bilancia (HX711 / Mock)
@@ -851,6 +916,10 @@ app.post('/api/settings', (req, res) => {
             toUpdate.cookidooZoom = Math.round(z * 100) / 100;
         }
 
+        if (req.body.dimming !== undefined && typeof req.body.dimming === 'object') {
+            toUpdate.dimming = req.body.dimming;
+        }
+
         if (Object.keys(toUpdate).length === 0) {
             return res.status(400).json({ error: 'Nessun parametro valido fornito da aggiornare.' });
         }
@@ -992,11 +1061,43 @@ app.get('/api/system/screen-dim', (req, res) => {
 app.post('/api/system/screen-dim', (req, res) => {
     try {
         const dimmed = Boolean(req.body && (req.body.dimmed !== undefined ? req.body.dimmed : req.body.isDimmed));
-        const status = backlightManager.setDimmed(dimmed);
+        const pct = (req.body && req.body.dimPercentage !== undefined) ? Number(req.body.dimPercentage) : null;
+        const status = backlightManager.setDimmed(dimmed, pct);
         io.emit('SCREEN_DIMMED_STATE', status);
         return res.json({ success: true, ...status });
     } catch (err) {
         console.error('[API] Errore /api/system/screen-dim:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// =============================================
+// REST API BUZZER PIEZOELETTRICO PWM (GPIO 18 / TM31)
+// =============================================
+
+// Stato attuale buzzer
+app.get('/api/system/buzzer/status', (req, res) => {
+    return res.json({ success: true, ...piezoBuzzer.getStatus() });
+});
+
+// Test / comando manuale buzzer
+app.post('/api/system/buzzer/test', (req, res) => {
+    try {
+        const { action = 'beep', frequency = 2500, duration = 200 } = req.body || {};
+        if (action === 'timer_done') {
+            piezoBuzzer.playTimerDone();
+        } else if (action === 'stop') {
+            piezoBuzzer.stop();
+        } else if (action === 'beep') {
+            piezoBuzzer.beep(Number(frequency) || 2500, Number(duration) || 100);
+        } else if (action === 'tone') {
+            piezoBuzzer.playTone(Number(frequency) || 2500, Number(duration) || 500);
+        } else {
+            return res.status(400).json({ error: 'Azione non valida. Valori ammessi: beep, tone, timer_done, stop' });
+        }
+        return res.json({ success: true, status: piezoBuzzer.getStatus() });
+    } catch (err) {
+        console.error('[API] Errore /api/system/buzzer/test:', err);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -1064,6 +1165,32 @@ app.post('/api/system/update', async (req, res) => {
     } catch (err) {
         console.error('[API] Errore POST /api/system/update:', err);
         return res.status(400).json({ success: false, error: err.message });
+    }
+});
+
+// =============================================
+// REST API GESTIONE ALIMENTAZIONE & SPEGNIMENTO SICURO
+// =============================================
+app.post('/api/system/power', async (req, res) => {
+    try {
+        const action = req.body?.action || 'shutdown';
+        if (!['shutdown', 'reboot', 'restart_app'].includes(action)) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Azione non valida. Valori ammessi: shutdown, reboot, restart_app' 
+            });
+        }
+        const result = await powerManager.executePowerAction({
+            action,
+            io,
+            bimbyService,
+            bimbySerial,
+            servo
+        });
+        return res.json({ success: true, ...result });
+    } catch (err) {
+        console.error('[API] Errore POST /api/system/power:', err);
+        return res.status(500).json({ success: false, error: err.message });
     }
 });
 

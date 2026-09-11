@@ -11,6 +11,11 @@ const DEFAULT_SETTINGS = {
         zeroOffset: 8388608,
         knownWeightGrams: 1000,
         lastCalibratedAt: null
+    },
+    dimming: {
+        enabled: true,
+        dimPercentage: 15,
+        timeoutSeconds: 300 // 5 minuti
     }
 };
 
@@ -27,6 +32,10 @@ function loadSettings() {
                 scaleCalibration: {
                     ...DEFAULT_SETTINGS.scaleCalibration,
                     ...(parsed?.scaleCalibration || {})
+                },
+                dimming: {
+                    ...DEFAULT_SETTINGS.dimming,
+                    ...(parsed?.dimming || {})
                 }
             };
             return cachedSettings;
@@ -87,6 +96,30 @@ function saveSettings(newSettings = {}) {
             };
         }
 
+        // Gestione e validazione parametri attenuazione display (Burn-in / Risparmio)
+        if (newSettings.dimming && typeof newSettings.dimming === 'object') {
+            const currentDim = current.dimming || DEFAULT_SETTINGS.dimming;
+            const enabled = newSettings.dimming.enabled !== undefined 
+                ? Boolean(newSettings.dimming.enabled) 
+                : currentDim.enabled;
+            
+            const pct = parseInt(newSettings.dimming.dimPercentage, 10);
+            const dimPercentage = (!isNaN(pct) && pct >= 5 && pct <= 90) 
+                ? pct 
+                : currentDim.dimPercentage;
+
+            const t = parseInt(newSettings.dimming.timeoutSeconds, 10);
+            const timeoutSeconds = (!isNaN(t) && t >= 10 && t <= 7200) 
+                ? t 
+                : currentDim.timeoutSeconds;
+
+            updated.dimming = {
+                enabled,
+                dimPercentage,
+                timeoutSeconds
+            };
+        }
+
         fs.writeFileSync(SETTINGS_FILE, JSON.stringify(updated, null, 2), 'utf-8');
         cachedSettings = updated;
         console.log('[SETTINGS] Impostazioni salvate su disco:', updated);
@@ -111,11 +144,17 @@ function getScaleCalibration() {
     return s.scaleCalibration || { ...DEFAULT_SETTINGS.scaleCalibration };
 }
 
+function getDimmingSettings() {
+    const s = getSettings();
+    return s.dimming || { ...DEFAULT_SETTINGS.dimming };
+}
+
 module.exports = {
     getSettings,
     saveSettings,
     getGeminiModel,
     getCookidooZoom,
     getScaleCalibration,
+    getDimmingSettings,
     DEFAULT_SETTINGS
 };
